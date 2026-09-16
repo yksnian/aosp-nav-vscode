@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "excludeJars": [
+    "^R\\.jar$",
+    "^stubs\\.jar$",
+    "^lint\\.jar$",
+    "^dex\\.jar$",
+    "^srcjars\\d+\\.jar$",
+    "^kapt-\\w+\\.jar$",
+    "stubs",
+    "-stub",
+    "^jrt-fs\\.jar$",
+    "-headers"
+  ],
+  "excludePaths": ["linux_glibc_common", "development/"],
+  "excludeGlobs": ["^prebuilts/sdk/sdk_"],
+  "ownTags": ["javac", "kotlinc"],
+  "repackagedTags": ["repackaged-jarjar", "jarjar"],
+  "soongTagPriority": ["combined", "turbine-combined", "turbine"],
+  "dirPriority": [
+    ["^packages/modules/", 0],
+    ["^frameworks/", 1],
+    ["^libcore/", 1],
+    ["^art/", 1],
+    ["^hardware/", 1],
+    ["^system/", 1],
+    ["^libnativehelper/", 1],
+    ["^external/", 2],
+    ["^tools/", 2]
+  ],
+  "dirPriorityFallback": 3,
+  "makeJars": ["classes.jar", "classes-header.jar", "javalib.jar"],
+  "makeBlacklist": ["android_stubs_current_intermediates"]
+}
