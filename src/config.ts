@@ -28,7 +28,7 @@ export function getConfig(): AospConfig {
     enabled: c.get<boolean>("enabled") ?? true,
     androidRoot: c.get<string | null>("androidRoot") ?? null,
     excludeMerge: (c.get<ExcluMerge>("excludeMerge") ?? "append") as ExcluMerge,
-    settingsScope: (c.get<"global" | "workspace">("settingsScope") ?? "global") as "global" | "workspace",
+    settingsScope: (c.get<"global" | "workspace">("settingsScope") ?? "workspace") as "global" | "workspace",
     exclude: {
       jars: c.get<string[]>("excludeJars") ?? [],
       paths: c.get<string[]>("excludePaths") ?? [],

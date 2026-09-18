@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 
 const WRITTEN_KEYS = "aosp-nav.writtenSettings"; // state key for rollback
 
-async function record(ctx: vscode.ExtensionContext, key: string): Promise<void> {
+export async function record(ctx: vscode.ExtensionContext, key: string): Promise<void> {
   const seen = ctx.globalState.get<string[]>(WRITTEN_KEYS) ?? [];
   if (!seen.includes(key)) {
     seen.push(key);
@@ -10,21 +10,61 @@ async function record(ctx: vscode.ExtensionContext, key: string): Promise<void> 
   }
 }
 
+/** Content equality (arrays compare element-wise; === is reference-equal for
+ *  arrays, which made wrapper.checksums rewrite on every activation). */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+  return a === b;
+}
+
+/** Update one key; a failure (e.g. key not yet registered because redhat.java
+ *  is still activating) must not abort the whole compat pass. Retry once after
+ *  a short delay to ride out the activation race. */
+async function safeUpdate(
+  jc: vscode.WorkspaceConfiguration,
+  key: string,
+  value: unknown,
+  log: (msg: string) => void
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await jc.update(key, value, vscode.ConfigurationTarget.Global);
+      return true;
+    } catch (e) {
+      if (attempt === 2) {
+        log(`[aosp-nav] warn: failed to write java.${key}: ${e}`);
+        return false;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  return false;
+}
+
 /** AOSP compatibility switches. Only writes when the current value differs;
  *  never overwrites a user's explicit `false` with anything else. */
-export async function applyOnce(ctx: vscode.ExtensionContext): Promise<void> {
+export async function applyOnce(
+  ctx: vscode.ExtensionContext,
+  log: (msg: string) => void = () => {}
+): Promise<void> {
   const jc = vscode.workspace.getConfiguration("java");
 
   const want: Array<[string, unknown]> = [
     ["import.gradle.enabled", false],
     ["import.maven.enabled", false],
-    ["import.gradle.wrapper.checksums", []],
+    // NOTE: java.import.gradle.wrapper.checksums was renamed upstream to
+    // java.imports.gradle.wrapper.checksums long ago; the old key is not a
+    // registered configuration, and update() on it throws CodeExpectedError.
+    // With gradle import disabled above, checksums are irrelevant anyway.
   ];
 
   for (const [sub, value] of want) {
-    if (jc.get(sub) !== value) {
-      await jc.update(sub, value, vscode.ConfigurationTarget.Global);
-      await record(ctx, `java.${sub}`);
+    if (!sameValue(jc.get(sub), value)) {
+      if (await safeUpdate(jc, sub, value, log)) {
+        await record(ctx, `java.${sub}`);
+      }
     }
   }
 
@@ -33,9 +73,9 @@ export async function applyOnce(ctx: vscode.ExtensionContext): Promise<void> {
   const wanted = ["**/out/**", "**/.repo/**"];
   const missing = wanted.filter((w) => !exclusions.includes(w));
   if (missing.length > 0) {
-    await jc.update("import.exclusions", [...exclusions, ...missing],
-      vscode.ConfigurationTarget.Global);
-    await record(ctx, "java.import.exclusions");
+    if (await safeUpdate(jc, "import.exclusions", [...exclusions, ...missing], log)) {
+      await record(ctx, "java.import.exclusions");
+    }
   }
 }
 

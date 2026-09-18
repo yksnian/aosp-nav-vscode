@@ -3,7 +3,7 @@
   "displayName": "Android Source Navigation",
   "description": "go-to-definition and completion across all android java modules",
   "publisher": "yksnian",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/yksnian/aosp-nav-vscode" },
   "icon": "icon.png",
@@ -58,8 +58,8 @@
         "aosp-nav.settingsScope": {
           "type": "string",
           "enum": ["global", "workspace"],
-          "default": "global",
-          "description": "Where java.project.referencedLibraries is written. global: user settings (no repo pollution, shared across windows); workspace: .vscode/settings.json inside the repo"
+          "default": "workspace",
+          "description": "Where java.project.referencedLibraries is written. workspace (default): .vscode/settings.json inside the repo, no impact on other Java projects; global: user settings, shared across windows but absolute jar paths pollute non-AOSP Java projects"
         },
         "aosp-nav.kotlin.enabled": {
           "type": "boolean",

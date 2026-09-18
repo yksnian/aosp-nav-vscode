@@ -12,6 +12,7 @@ import { scanJars, isDirectory } from "./infra/fsScan";
 import { applyReferencedLibraries } from "./jdtls/settingsChannel";
 import { ensureJavaExtension } from "./jdtls/depManager";
 import { applyOnce as applyCompat, resetWritten } from "./jdtls/compat";
+import { apply as applyHygiene } from "./jdtls/workspaceHygiene";
 import * as status from "./status";
 import { invalidateCache } from "./commands/rescan";
 import { openOutput, printDiagnostics, DiagLine } from "./commands/diagnostics";
@@ -44,8 +45,13 @@ export function activate(ctx: vscode.ExtensionContext): void {
       const ex = effectiveExclusions(cfg, defaultsJson);
       const fhash = filtersHash(ex);
 
-      await ensureJavaExtension();
-      await applyCompat(ctx);
+      if (!(await ensureJavaExtension())) {
+        status.statusFailed();
+        s.phase = "failed";
+        return;
+      }
+      await applyCompat(ctx, (m) => channel.appendLine(m));
+      await applyHygiene(ctx, (m) => channel.appendLine(m));
 
       // cache
       const cacheFile = path.join(ctx.globalStorageUri.fsPath, `jars-${djb2(root)}.json`);
@@ -128,8 +134,18 @@ export function activate(ctx: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("aosp-nav.")) {
-        // invalidate sessions; next file-open triggers rescan (filters-hash handles cache)
-        for (const [k, v] of sessions) { if (v.phase === "ready") v.phase = "idle"; }
+        // invalidate sessions and re-run immediately so new filters/scope take
+        // effect without reopening a file (cache is filters-hash aware)
+        const roots = [...sessions.entries()]
+          .filter(([, v]) => v.phase !== "scanning")
+          .map(([root]) => root);
+        for (const root of roots) {
+          const s = sessions.get(root);
+          if (s) s.phase = "idle";
+        }
+        if (getConfig().enabled) {
+          void (async () => { for (const root of roots) await runFor(root); })();
+        }
       }
     }),
     vscode.commands.registerCommand("aosp-nav.rescan", async () => {

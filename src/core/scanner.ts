@@ -3,6 +3,8 @@ import { Defaults, ScanEntry, ScanResult } from "./types";
 import { FilterEngine } from "./filters";
 
 const SOONG_BASES = ["out/soong/.intermediates", "out/.soong/.intermediates"];
+// variant dirs: android_common (rank 0) or android_common_apex{,N}... (rank 1)
+const APEX_VARIANT_PREFIX = "android_common_apex";
 
 function variantRank(v: string, fallbackPrefix: string): number | null {
   if (v === "android_common") return 0;
@@ -53,7 +55,7 @@ async function scanBase(
     // rightmost variant component
     let vi = -1;
     for (let i = comps.length - 2; i >= 0; i--) {
-      if (variantRank(comps[i], defaults.dirPriorityFallback >= 0 ? "android_common_apex" : "android_common_apex") !== null) {
+      if (variantRank(comps[i], APEX_VARIANT_PREFIX) !== null) {
         vi = i;
         break;
       }
@@ -75,7 +77,7 @@ async function scanBase(
     const entry: ScanEntry = { absPath, relPath, moduleName, variant: comps[vi], type: typ };
     if (filters.hit(entry)) { excluded++; continue; }
 
-    const rank = variantRank(comps[vi], "android_common_apex")! * 100
+    const rank = variantRank(comps[vi], APEX_VARIANT_PREFIX)! * 100
       + (typeRank.get(typ) ?? unknownRank);
 
     if (defaults.ownTags.includes(typ)) {
