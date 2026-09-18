@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.2-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Instant source navigation for Android (AOSP) in VSCode — go-to-definition, completion and reference resolution across **all** Java modules (frameworks/base, packages/modules/*, system_server services, ...), with zero manual project setup.
 
@@ -14,8 +14,9 @@ aosp-nav bridges that gap automatically:
 
 1. **Detect** — open any `.java` file in an AOSP checkout; the plugin walks up from the file path to find the AOSP root (before that, it is fully silent).
 2. **Select** — scan `out/soong/.intermediates` and pick exactly one set of artifacts per module, excluding the whole API-stub zoo and ordering real implementations before anything suspicious.
-3. **Inject** — write the ordered jar list to `java.project.referencedLibraries`, apply AOSP compatibility switches (disable Gradle/Maven importers, exclude `out/`/`.repo/` from import), and keep the file watcher/search away from the huge `out/` tree (`files.watcherExclude`, `search.exclude`).
-4. **Cache** — persist the list, auto-invalidated by algorithm version or exclusion-config fingerprint. Configuration changes just work.
+3. **Inject** — write the ordered jar list to `java.project.referencedLibraries`, apply AOSP compatibility switches (disable Gradle/Maven importers, exclude `out/`/`.repo/` from import), and keep the file watcher/search away from the huge `out/` tree (`files.watcherExclude`, `search.exclude`). The write is automatic (no confirmation) and retried on the next file open if it fails.
+4. **Guard** — the eclipse guard scans the workspace for leftover `.project`+`.classpath` directories (old jdtls/buildship sessions) and excludes them from import detection, so jdt.ls keeps creating its invisible project and `referencedLibraries` actually applies (see FAQ).
+5. **Cache** — persist the list, auto-invalidated by algorithm version or exclusion-config fingerprint. Configuration changes just work.
 
 ## Requirements
 
@@ -36,15 +37,16 @@ Recommended for large trees — raise the language server heap (user settings):
 3. **First time only**: the language server indexes the classpath in the background — 30–60 minutes on frameworks/base-sized trees, high CPU is normal. It is one-time; later opens are instant. Do **not** restart the language server during this phase.
 4. Navigate: F12 / completions now resolve `android.*`, `com.android.*`, system_server internals, etc. Types that exist only in jars (AIDL interfaces, proto classes, aconfig flags) land in the decompiled view — expected, since no `.java` for them exists in the source tree.
 
-Works with the AOSP root or any sub-checkout (e.g. `frameworks/base`) as the workspace — detection is per opened file, not per folder.
+Works with the AOSP root or any sub-checkout (e.g. `frameworks/base`) as the workspace — detection is per opened file, not per folder. If the guard finds leftover Eclipse metadata dirs on first use (typical when opening the AOSP root on a machine that previously ran the nvim plugin or buildship), it offers a one-time "clean and reload" (`java.clean.workspace`): the clean rebuilds the language-server workspace, after which the first Eclipse index takes ~30–60 minutes — one-time cost.
 
 ## Commands
 
 | Command                       | Description                                                  |
 | ----------------------------- | ------------------------------------------------------------ |
-| `AOSP: Rescan Jars`           | Drop the jar cache and rescan                                |
-| `AOSP: Show Diagnostics`      | Structured self-check (root / cache / settings / extensions) — attach it to issues |
-| `AOSP: Reset Plugin Settings` | Roll back every settings key this plugin has written         |
+| `AOSP: Rescan Jars`           | Drop the jar cache and rescan (also re-runs the eclipse guard) |
+| `AOSP: Show Diagnostics`      | Structured self-check (root / cache / settings / extensions / guard) — attach it to issues |
+| `AOSP: Fix Eclipse Metadata Blockers` | Run the one-time clean+reload for leftover Eclipse metadata dirs |
+| `AOSP: Reset Plugin Settings` | Roll back every settings key this plugin has written (incl. workspace layer) |
 
 ## Configuration
 
@@ -58,7 +60,7 @@ Exclusion lists use **append** semantics by default: your entries are added afte
 | `aosp-nav.excludePaths`  | `[]`       | Substring keywords on the full path, e.g. `"external/cronet"` |
 | `aosp-nav.excludeGlobs`  | `[]`       | Regex on the path relative to `.intermediates/`. Anchor with `^` for top-level precision, e.g. `"^packages/apps/"` |
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = user lists added after defaults; `replace` = defaults discarded |
-| `aosp-nav.settingsScope` | `"workspace"` | Where `referencedLibraries` is written: `workspace` (`.vscode/settings.json` inside the repo, no impact on other Java projects) or `global` (user settings, shared across windows, but absolute jar paths pollute non-AOSP Java projects) |
+| `aosp-nav.settingsScope` | `"workspace"` | Where `referencedLibraries` is written: `workspace` (`.vscode/settings.json` inside the repo, no impact on other Java projects) or `global` (user settings, shared across windows, but absolute jar paths pollute non-AOSP Java projects). Since 0.1.2 the write needs no confirmation; switching scope auto-clears our previous list from the other layer |
 
 Notes on multi-repo windows: with the `global` scope, opening files from different sub-checkouts in one window injects the **union** of jars (they heavily overlap anyway). With the default `workspace` scope the list is written per repo — open each sub-checkout in its own window for strictly per-repo classpaths.
 
@@ -78,6 +80,16 @@ Notes on multi-repo windows: with the `global` scope, opening files from differe
 ### Navigation doesn't work right after the first injection
 
 The Eclipse background index is still running (status-bar spinner). Wait for CPU to settle — 30–60 minutes on the first open of a large tree.
+
+If the status bar shows `$(warning) AOSP:<n> stale` / diagnostics reports eclipse-guard blockers, see the next section.
+
+### Status bar says "N stale" / opening the AOSP root has no navigation at all (eclipse guard)
+
+jdt.ls applies `java.project.referencedLibraries` **only to the invisible project**; any sub-directory containing both `.project` and `.classpath` is imported as a real Eclipse project instead, which suppresses the invisible project entirely — the injected jars never apply, opened files fall into the jar-less default project, and navigation is dead. These dirs are usually metadata left behind by earlier nvim-jdtls/buildship sessions (e.g. `external/<lib>/`, or sub-checkouts once opened with older tooling); before 0.1.2, opening the AOSP root always hit this.
+
+Handling (automatic): the guard writes each such dir into the workspace layer of `java.import.exclusions` (exact absolute-path match, no effect on other projects) and offers a one-time "clean and reload" — already-imported projects persist inside the language-server workspace, so `java.clean.workspace` must rebuild it for the exclusions to take effect. After the clean, the first Eclipse index takes ~30–60 minutes; never needed again. You can also trigger it manually via `AOSP: Fix Eclipse Metadata Blockers`.
+
+Note: dirs with only `.project` and no `.classpath` (e.g. the nvim plugin's `packages/modules/Connectivity/.project`) are harmless and left alone.
 
 ### Diagnostics says `jdt.ls.vmargs ⚠`
 

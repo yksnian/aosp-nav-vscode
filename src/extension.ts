@@ -9,10 +9,11 @@ import { applyDirPriority } from "./core/selector";
 import { FilterEngine } from "./core/filters";
 import { CACHE_VERSION, filtersHash, isCacheValid, CacheFile } from "./core/cacheModel";
 import { scanJars, isDirectory } from "./infra/fsScan";
-import { applyReferencedLibraries } from "./jdtls/settingsChannel";
+import { applyReferencedLibraries, clearOwnWorkspaceLibs } from "./jdtls/settingsChannel";
 import { ensureJavaExtension } from "./jdtls/depManager";
 import { applyOnce as applyCompat, resetWritten } from "./jdtls/compat";
 import { apply as applyHygiene } from "./jdtls/workspaceHygiene";
+import { guardWorkspace, cleanAndReload, clearOwnExclusions, getLastReports, isCleanPending } from "./jdtls/eclipseGuard";
 import * as status from "./status";
 import { invalidateCache } from "./commands/rescan";
 import { openOutput, printDiagnostics, DiagLine } from "./commands/diagnostics";
@@ -29,6 +30,17 @@ export function activate(ctx: vscode.ExtensionContext): void {
   ctx.subscriptions.push(channel);
 
   loadDefaults(ctx).then((d) => { defaultsJson = d; });
+
+  // eclipse guard: neutralize stale .project/.classpath dirs that would
+  // suppress jdt.ls' invisible project (and thus referencedLibraries).
+  // Runs at activation — before or in parallel with redhat.java's import —
+  // and again whenever workspace folders change.
+  void guardWorkspace(ctx, (m) => channel.appendLine(m));
+  ctx.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void guardWorkspace(ctx, (m) => channel.appendLine(m));
+    })
+  );
 
   const runFor = async (root: string): Promise<void> => {
     const s = sessions.get(root) ?? { phase: "idle" as const, jars: [] };
@@ -85,14 +97,27 @@ export function activate(ctx: vscode.ExtensionContext): void {
         applyDirPriority(scan.jars, defaultsJson);
         jars = scan.jars;
         await fs.mkdir(ctx.globalStorageUri.fsPath, { recursive: true });
-        await fs.writeFile(cacheFile, JSON.stringify({
+        // two windows of the same aosp root share globalStorage: write via a
+        // unique temp file + rename so concurrent scans never interleave
+        const tmp = `${cacheFile}.${process.pid}.tmp`;
+        await fs.writeFile(tmp, JSON.stringify({
           version: CACHE_VERSION, filtersHash: fhash,
           generatedAt: new Date().toISOString(), jars,
         } as CacheFile));
+        await fs.rename(tmp, cacheFile);
       }
 
       s.jars = jars;
-      const res = await applyReferencedLibraries(cfg.settingsScope, jars);
+      const res = await applyReferencedLibraries(ctx, cfg.settingsScope, jars, (m) => channel.appendLine(m));
+      if (!res.inEffect) {
+        // write failed (e.g. settings not writable): keep the session
+        // retryable — the next file open tries again instead of dying
+        // silently as in 0.1.1
+        status.statusFailed();
+        s.phase = "failed";
+        channel.appendLine(`[aosp-nav] ${root}: referencedLibraries not applied, will retry on next open`);
+        return;
+      }
       if (res.changed) {
         status.statusIndexing(jars.length);
         if (!firstIndexNotified) {
@@ -157,10 +182,26 @@ export function activate(ctx: vscode.ExtensionContext): void {
       sessions.delete(root);
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Window, title: "AOSP: rescanning" },
-        () => runFor(root));
+        async () => {
+          await runFor(root);
+          // re-run the eclipse guard too: the user may have cleaned stale
+          // metadata dirs manually since the last scan
+          await guardWorkspace(ctx, (m) => channel.appendLine(m));
+        });
+    }),
+    vscode.commands.registerCommand("aosp-nav.fixEclipseBlockers", async () => {
+      const n = getLastReports().reduce((a, r) => a + r.blockers.length + (r.rootBlocked ? 1 : 0), 0);
+      if (n === 0) {
+        void vscode.window.showInformationMessage(
+          "[aosp-nav] 没有需要修复的 Eclipse 元数据阻塞 (尚未扫描时请先打开一个 AOSP java 文件)。");
+        return;
+      }
+      await cleanAndReload(ctx, (m) => channel.appendLine(m));
     }),
     vscode.commands.registerCommand("aosp-nav.resetSettings", async () => {
       await resetWritten(ctx);
+      await clearOwnWorkspaceLibs(ctx);
+      await clearOwnExclusions(ctx);
       void vscode.window.showInformationMessage("[aosp-nav] 插件写入的 settings 已回滚");
     }),
     vscode.commands.registerCommand("aosp-nav.diagnostics", async () => {
@@ -195,6 +236,24 @@ export function activate(ctx: vscode.ExtensionContext): void {
         detail: vmargs || "(unset)",
         action: vmargs.includes("-Xmx") ? undefined : "add e.g. java.jdt.ls.vmargs: -Xmx6G ... in user settings",
       });
+      // eclipse guard
+      const pending = await isCleanPending(ctx);
+      for (const r of getLastReports()) {
+        const n = r.blockers.length + (r.rootBlocked ? 1 : 0);
+        lines.push({
+          ok: n === 0,
+          label: `eclipse guard [${path.basename(r.folder)}]`,
+          detail: n === 0
+            ? "no stale .project/.classpath dirs"
+            : `${n} blocker(s)${r.rootBlocked ? " (workspace root itself has Eclipse metadata)" : ""}${pending ? ", clean+reload pending" : ""}`,
+          action: n > 0 ? "run 'AOSP: Fix Eclipse Metadata Blockers' (one-time clean + reload)" : undefined,
+        });
+      }
+      if (getLastReports().length === 0) {
+        lines.push({ ok: null, label: "eclipse guard", detail: "not scanned yet (open an AOSP java file first)" });
+      }
+      const excl = jc.get<string[]>("import.exclusions") ?? [];
+      lines.push({ ok: null, label: "import.exclusions", detail: `${excl.length} patterns` });
       printDiagnostics(channel, lines);
     })
   );

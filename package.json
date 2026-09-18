@@ -3,19 +3,20 @@
   "displayName": "Android Source Navigation",
   "description": "go-to-definition and completion across all android java modules",
   "publisher": "yksnian",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/yksnian/aosp-nav-vscode" },
   "icon": "icon.png",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Programming Languages", "Other"],
-  "activationEvents": [],
+  "activationEvents": ["onLanguage:java"],
   "extensionDependencies": ["redhat.java"],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       { "command": "aosp-nav.rescan", "title": "AOSP: Rescan Jars", "category": "AOSP" },
       { "command": "aosp-nav.diagnostics", "title": "AOSP: Show Diagnostics", "category": "AOSP" },
+      { "command": "aosp-nav.fixEclipseBlockers", "title": "AOSP: Fix Eclipse Metadata Blockers", "category": "AOSP" },
       { "command": "aosp-nav.resetSettings", "title": "AOSP: Reset Plugin Settings", "category": "AOSP" }
     ],
     "configuration": {

@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.2-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
 
@@ -14,8 +14,9 @@ aosp-nav 自动弥合这个鸿沟:
 
 1. **检测** —— 打开 AOSP 内任意 `.java` 文件, 插件从文件路径向上找到 AOSP 根 (在此之前完全静默);
 2. **选择** —— 扫描 `out/soong/.intermediates`, 每模块只保留一套必要产物, 排除整个桩家族, 并保证真身永远排在可疑产物之前;
-3. **注入** —— 将有序 jar 列表写入 `java.project.referencedLibraries`,应用 AOSP 兼容开关 (禁用 Gradle/Maven 导入器、排除 `out/`/`.repo/`), 并让文件监视/搜索避开庞大的 `out/` 树 (`files.watcherExclude`、`search.exclude`);
-4. **缓存** —— 列表持久化, 由算法版本号或排除配置指纹自动失效。修改配置即生效, 无需手动清理。
+3. **注入** —— 将有序 jar 列表写入 `java.project.referencedLibraries`,应用 AOSP 兼容开关 (禁用 Gradle/Maven 导入器、排除 `out/`/`.repo/`), 并让文件监视/搜索避开庞大的 `out/` 树 (`files.watcherExclude`、`search.exclude`); 写入自动完成, 无需确认, 失败会在下次打开文件时自动重试;
+4. **护栏** —— eclipse guard 扫描 workspace 内散落的 `.project`+`.classpath` 遗留目录 (旧 jdtls/buildship 会话产物), 把它们排除出导入检测, 保证 jdt.ls 为你的目录创建 invisible project、`referencedLibraries` 真正生效 (见 FAQ);
+5. **缓存** —— 列表持久化, 由算法版本号或排除配置指纹自动失效。修改配置即生效, 无需手动清理。
 
 ## 依赖
 
@@ -36,15 +37,16 @@ aosp-nav 自动弥合这个鸿沟:
 3. **仅首次**: 语言服务器后台索引 classpath——frameworks/base 量级的树需 30-60 分钟, CPU 高占用属正常, 索引状态持久化, 之后打开秒级。**索引期间请勿重启语言服务器**。
 4. 跳转/补全即可解析 `android.*`、`com.android.*`、system_server 内部类型等。只存在于 jar 中的类型 (AIDL 接口、proto 类、aconfig flags) 跳转落点为反编译视图——属预期行为, 源码树内本就没有它们的 .java。
 
-workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测以打开的文件为准, 不依赖 workspace 位置。
+workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测以打开的文件为准, 不依赖 workspace 位置。若 guard 首次在工作区发现 Eclipse 元数据遗留目录 (常见于打开 AOSP 根目录、且此前用过 nvim 版插件或 buildship 的机器), 会提示一次性"清理并重载" (即 `java.clean.workspace`): 清理会重建语言服务器工作区, 之后 Eclipse 首次索引约 30-60 分钟, 属一次性开销。
 
 ## 命令
 
 | 命令                          | 说明                                                         |
 | ----------------------------- | ------------------------------------------------------------ |
-| `AOSP: Rescan Jars`           | 清除 jar 缓存并重扫                                          |
-| `AOSP: Show Diagnostics`      | 结构化自检报告 (root/缓存/settings/扩展状态)——提 issue 时请附上 |
-| `AOSP: Reset Plugin Settings` | 回滚本插件写入过的所有 settings                              |
+| `AOSP: Rescan Jars`           | 清除 jar 缓存并重扫 (同时重跑 eclipse guard)                  |
+| `AOSP: Show Diagnostics`      | 结构化自检报告 (root/缓存/settings/扩展状态/guard)——提 issue 时请附上 |
+| `AOSP: Fix Eclipse Metadata Blockers` | 对遗留 Eclipse 元数据目录执行一次性"清理并重载"        |
+| `AOSP: Reset Plugin Settings` | 回滚本插件写入过的所有 settings (含 workspace 层)             |
 
 ## 配置
 
@@ -58,7 +60,7 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 | `aosp-nav.excludePaths`  | `[]`       | 完整路径的子串关键词, 如 `"external/cronet"`                 |
 | `aosp-nav.excludeGlobs`  | `[]`       | 匹配 `.intermediates/` 之后相对路径的正则。用 `^` 锚定可精确到顶层目录, 如 `"^packages/apps/"` |
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = 用户列表追加到默认值后; `replace` = 丢弃默认值    |
-| `aosp-nav.settingsScope` | `"workspace"` | `referencedLibraries` 写入位置: `workspace` (仓库内 `.vscode/settings.json`, 不影响其他 Java 工程) 或 `global` (用户 settings, 多窗口共享, 但绝对路径 jar 会污染非 AOSP 的 Java 工程) |
+| `aosp-nav.settingsScope` | `"workspace"` | `referencedLibraries` 写入位置: `workspace` (仓库内 `.vscode/settings.json`, 不影响其他 Java 工程) 或 `global` (用户 settings, 多窗口共享, 但绝对路径 jar 会污染非 AOSP 的 Java 工程)。0.1.2 起写入不再需要确认; 切换 scope 时插件会自动清掉自己先前写在另一层的旧列表 |
 
 多仓库窗口说明: `global` 档下, 同一窗口打开不同子仓库的文件时注入 jar 的**并集** (重叠度本来就很高)。默认 `workspace` 档按仓库写入——每个子仓库用独立窗口打开即可获得严格的 per-repo classpath。
 
@@ -83,6 +85,16 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 ### 首次注入后跳转不工作
 
 Eclipse 后台索引还在跑 (状态栏转圈)。等 CPU 降下来——大树首次需 30-60 分钟。
+
+若状态栏显示 `$(warning) AOSP:<n> stale` / diagnostics 提示 eclipse guard 有 blocker, 见下一节。
+
+### 状态栏提示 "N stale" / 打开 AOSP 根目录后跳转全挂 (eclipse guard)
+
+jdt.ls 的 `java.project.referencedLibraries` **只对 invisible project 生效**; 而树里任何同时含 `.project` 和 `.classpath` 的子目录都会被当作真实 Eclipse 工程导入, 导致 invisible project 永远不创建、注入的 jar 完全无效——打开的文件落入无 classpath 的 default project, 跳转全挂。这些目录一般是早年 nvim-jdtls/buildship 会话遗留的元数据 (典型如 `external/<lib>/`、或曾用旧工具打开过的子仓库), 0.1.2 之前打开 AOSP 根目录必然踩中。
+
+处理 (自动): guard 把这些目录逐个写进 workspace 层 `java.import.exclusions` (绝对路径精确匹配, 不影响其他工程), 并提示一次性"清理并重载"——因为已导入的工程持久化在语言服务器工作区里, 必须 `java.clean.workspace` 重建后排除才生效。清理后 Eclipse 首次索引约 30-60 分钟, 此后不再需要。也可手动执行 `AOSP: Fix Eclipse Metadata Blockers`。
+
+注: 只有 `.project` 而无 `.classpath` 的目录 (如 nvim 插件留下的 `packages/modules/Connectivity/.project`) 无害, 不会被 guard 处理。
 
 ### Diagnostics 显示 `jdt.ls.vmargs ⚠`
 
