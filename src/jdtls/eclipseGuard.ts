@@ -111,12 +111,15 @@ export async function guardWorkspace(
     log(`[aosp-nav] eclipse guard: ${n} blocker(s), clean+reload pending`);
     if (!notifiedThisSession) {
       notifiedThisSession = true;
+      const button = vscode.l10n.t("Clean && Reload");
       void vscode.window.showInformationMessage(
-        `[aosp-nav] 检测到 ${n} 个 Eclipse 元数据目录 (旧 jdtls/buildship 遗留), 会阻止依赖注入生效。` +
-        `已写入排除规则, 需要"清理并重载"后生效 (一次性; 清理后 Eclipse 首次索引约 30-60 分钟)。`,
-        "清理并重载"
+        vscode.l10n.t(
+          "[aosp-nav] Detected {0} Eclipse metadata dir(s) left behind by old jdtls/buildship sessions. They prevent the injected jars from taking effect. Exclusion rules have been written; a one-time clean-and-reload is required (the first Eclipse indexing after the clean takes about 30-60 minutes).",
+          n
+        ),
+        button
       ).then((pick) => {
-        if (pick === "清理并重载") void cleanAndReload(ctx, log);
+        if (pick === button) void cleanAndReload(ctx, log);
       });
     }
   } else if (n === 0) {

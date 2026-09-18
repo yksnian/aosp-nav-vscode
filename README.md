@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.2-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.4-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Instant source navigation for Android (AOSP) in VSCode — go-to-definition, completion and reference resolution across **all** Java modules (frameworks/base, packages/modules/*, system_server services, ...), with zero manual project setup.
 
@@ -38,6 +38,8 @@ Recommended for large trees — raise the language server heap (user settings):
 4. Navigate: F12 / completions now resolve `android.*`, `com.android.*`, system_server internals, etc. Types that exist only in jars (AIDL interfaces, proto classes, aconfig flags) land in the decompiled view — expected, since no `.java` for them exists in the source tree.
 
 Works with the AOSP root or any sub-checkout (e.g. `frameworks/base`) as the workspace — detection is per opened file, not per folder. If the guard finds leftover Eclipse metadata dirs on first use (typical when opening the AOSP root on a machine that previously ran the nvim plugin or buildship), it offers a one-time "clean and reload" (`java.clean.workspace`): the clean rebuilds the language-server workspace, after which the first Eclipse index takes ~30–60 minutes — one-time cost.
+
+Messages follow the VS Code display language: Chinese for zh-cn, English everywhere else.
 
 ## Commands
 
@@ -90,6 +92,18 @@ jdt.ls applies `java.project.referencedLibraries` **only to the invisible projec
 Handling (automatic): the guard writes each such dir into the workspace layer of `java.import.exclusions` (exact absolute-path match, no effect on other projects) and offers a one-time "clean and reload" — already-imported projects persist inside the language-server workspace, so `java.clean.workspace` must rebuild it for the exclusions to take effect. After the clean, the first Eclipse index takes ~30–60 minutes; never needed again. You can also trigger it manually via `AOSP: Fix Eclipse Metadata Blockers`.
 
 Note: dirs with only `.project` and no `.classpath` (e.g. the nvim plugin's `packages/modules/Connectivity/.project`) are harmless and left alone.
+
+### Java reports "Syntax Server ... -32097" or "An error has occurred ... config_ss_linux"
+
+The redhat.java Syntax Server (a startup accelerator that shares one configuration directory with the main server) can get corrupted when several windows reload at once (typically right after installing/upgrading an extension) — afterwards every startup logs `couldn't create connection to server (-32097)`. Navigation itself is unaffected (the main server provides it); repair once:
+
+```bash
+EXT=$(ls -d <DATA>/extensions/redhat.java-*/ | head -1)
+GS=<DATA>/user-data/User/globalStorage/redhat.java/1.56.0
+cp "$EXT/server/config_ss_linux/config.ini" "$GS/config_ss_linux/config.ini"
+```
+
+`<DATA>` is `~/.vscode-server/data` for Remote-WSL, or `<install-dir>/data` for portable/self-managed installs. Reload the window afterwards.
 
 ### Diagnostics says `jdt.ls.vmargs ⚠`
 

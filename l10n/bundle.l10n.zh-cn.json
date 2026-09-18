@@ -1,0 +1,21 @@
+{
+  "[aosp-nav] Injected {0} dependency jars. The first Eclipse indexing takes about 30-60 minutes (one-time); high CPU is normal, do not restart the language server during it. Later opens are instant.": "[aosp-nav] 已注入 {0} 个依赖 jar。Eclipse 首次索引约需 30-60 分钟(一次性), 期间 CPU 高属正常, 请勿重启语言服务。之后每次打开为秒级。",
+  "Got it": "了解",
+  "[aosp-nav] no active file": "[aosp-nav] 无活动文件",
+  "[aosp-nav] not an AOSP file": "[aosp-nav] 非 AOSP 文件",
+  "[aosp-nav] No Eclipse metadata blockers to fix (if the workspace has not been scanned yet, open an AOSP java file first).": "[aosp-nav] 没有需要修复的 Eclipse 元数据阻塞 (尚未扫描时请先打开一个 AOSP java 文件)。",
+  "[aosp-nav] settings written by the plugin have been rolled back": "[aosp-nav] 插件写入的 settings 已回滚",
+  "[aosp-nav] Detected {0} Eclipse metadata dir(s) left behind by old jdtls/buildship sessions. They prevent the injected jars from taking effect. Exclusion rules have been written; a one-time clean-and-reload is required (the first Eclipse indexing after the clean takes about 30-60 minutes).": "[aosp-nav] 检测到 {0} 个 Eclipse 元数据目录 (旧 jdtls/buildship 遗留), 会阻止依赖注入生效。已写入排除规则, 需要\"清理并重载\"后生效 (一次性; 清理后 Eclipse 首次索引约 30-60 分钟)。",
+  "Clean && Reload": "清理并重载",
+  "[aosp-nav] Java extension (redhat.java) is not installed; go-to-definition and completion are unavailable": "[aosp-nav] Java 扩展 (redhat.java) 未安装, 无法提供跳转/补全",
+  "Open Extension Page": "打开扩展页",
+  "**AOSP Dev** blocked\n\n{0} stale Eclipse metadata dir(s) are blocking dependency injection. Click for diagnostics or run 'AOSP: Fix Eclipse Metadata Blockers'.": "**AOSP Dev** blocked\n\n{0} 个 Eclipse 元数据目录阻止了依赖注入。点击查看诊断, 或运行 'AOSP: Fix Eclipse Metadata Blockers'。",
+  "**AOSP Dev** jars injected but blocked by {0} stale Eclipse metadata dir(s)\n\n- jars: {1} ({2})\n- root: {3}\n\nRun 'AOSP: Fix Eclipse Metadata Blockers' for the one-time clean + reload.": "**AOSP Dev** jars 已注入, 但被 {0} 个 Eclipse 元数据目录阻止生效\n\n- jars: {1} ({2})\n- root: {3}\n\n运行 'AOSP: Fix Eclipse Metadata Blockers' 执行一次性清理并重载。",
+  "cached": "缓存",
+  "fresh scan": "新扫描",
+  "AOSP: scanning soong intermediates...": "AOSP: 正在扫描 soong intermediates...",
+  "**AOSP Dev** ready\n\n- jars: {0} ({1})\n- root: {2}\n\nClick for diagnostics.": "**AOSP Dev** 就绪\n\n- jars: {0} ({1})\n- root: {2}\n\n点击查看诊断。",
+  "**Eclipse is indexing the classpath.**\n\nThis is a one-time cost (30-60 min on large trees). CPU usage is normal.\nDo **not** restart the language server during this phase. Later opens are instant.": "**Eclipse 正在索引 classpath。**\n\n这是一次性开销 (大树约 30-60 分钟)。CPU 占用高属正常。\n此阶段请**勿**重启语言服务器。之后每次打开为秒级。",
+  "AOSP root detected but no build outputs found. Build the tree first.": "已检测到 AOSP 根, 但没有构建产物。请先编译整个树。",
+  "AOSP: scan failed. Run 'AOSP: Show Diagnostics' for details.": "AOSP: 扫描失败。运行 'AOSP: Show Diagnostics' 查看详情。"
+}

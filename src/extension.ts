@@ -123,8 +123,11 @@ export function activate(ctx: vscode.ExtensionContext): void {
         if (!firstIndexNotified) {
           firstIndexNotified = true;
           void vscode.window.showInformationMessage(
-            `[aosp-nav] 已注入 ${jars.length} 个依赖 jar。Eclipse 首次索引约需 30-60 分钟(一次性), 期间 CPU 高属正常, 请勿重启语言服务。之后每次打开为秒级。`,
-            "了解");
+            vscode.l10n.t(
+              "[aosp-nav] Injected {0} dependency jars. The first Eclipse indexing takes about 30-60 minutes (one-time); high CPU is normal, do not restart the language server during it. Later opens are instant.",
+              jars.length
+            ),
+            vscode.l10n.t("Got it"));
         }
       } else {
         status.statusReady(jars.length, fromCache, root);
@@ -175,9 +178,9 @@ export function activate(ctx: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("aosp-nav.rescan", async () => {
       const ae = vscode.window.activeTextEditor;
-      if (!ae) { void vscode.window.showWarningMessage("[aosp-nav] 无活动文件"); return; }
+      if (!ae) { void vscode.window.showWarningMessage(vscode.l10n.t("[aosp-nav] no active file")); return; }
       const root = getConfig().androidRoot ?? await detectAospRoot(ae.document.uri.fsPath);
-      if (!root) { void vscode.window.showWarningMessage("[aosp-nav] 非 AOSP 文件"); return; }
+      if (!root) { void vscode.window.showWarningMessage(vscode.l10n.t("[aosp-nav] not an AOSP file")); return; }
       invalidateCache(ctx.globalStorageUri.fsPath, root);
       sessions.delete(root);
       await vscode.window.withProgress(
@@ -193,7 +196,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       const n = getLastReports().reduce((a, r) => a + r.blockers.length + (r.rootBlocked ? 1 : 0), 0);
       if (n === 0) {
         void vscode.window.showInformationMessage(
-          "[aosp-nav] 没有需要修复的 Eclipse 元数据阻塞 (尚未扫描时请先打开一个 AOSP java 文件)。");
+          vscode.l10n.t("[aosp-nav] No Eclipse metadata blockers to fix (if the workspace has not been scanned yet, open an AOSP java file first)."));
         return;
       }
       await cleanAndReload(ctx, (m) => channel.appendLine(m));
@@ -202,7 +205,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       await resetWritten(ctx);
       await clearOwnWorkspaceLibs(ctx);
       await clearOwnExclusions(ctx);
-      void vscode.window.showInformationMessage("[aosp-nav] 插件写入的 settings 已回滚");
+      void vscode.window.showInformationMessage(vscode.l10n.t("[aosp-nav] settings written by the plugin have been rolled back"));
     }),
     vscode.commands.registerCommand("aosp-nav.diagnostics", async () => {
       openOutput(channel);

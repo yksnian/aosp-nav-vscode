@@ -3,7 +3,7 @@
   "displayName": "Android Source Navigation",
   "description": "go-to-definition and completion across all android java modules",
   "publisher": "yksnian",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/yksnian/aosp-nav-vscode" },
   "icon": "icon.png",

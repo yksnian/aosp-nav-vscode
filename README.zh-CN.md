@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.2-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.4-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
 
@@ -38,6 +38,8 @@ aosp-nav 自动弥合这个鸿沟:
 4. 跳转/补全即可解析 `android.*`、`com.android.*`、system_server 内部类型等。只存在于 jar 中的类型 (AIDL 接口、proto 类、aconfig flags) 跳转落点为反编译视图——属预期行为, 源码树内本就没有它们的 .java。
 
 workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测以打开的文件为准, 不依赖 workspace 位置。若 guard 首次在工作区发现 Eclipse 元数据遗留目录 (常见于打开 AOSP 根目录、且此前用过 nvim 版插件或 buildship 的机器), 会提示一次性"清理并重载" (即 `java.clean.workspace`): 清理会重建语言服务器工作区, 之后 Eclipse 首次索引约 30-60 分钟, 属一次性开销。
+
+提示信息跟随 VS Code 显示语言: 中文环境显示中文, 其他语言一律英文。
 
 ## 命令
 
@@ -95,6 +97,18 @@ jdt.ls 的 `java.project.referencedLibraries` **只对 invisible project 生效*
 处理 (自动): guard 把这些目录逐个写进 workspace 层 `java.import.exclusions` (绝对路径精确匹配, 不影响其他工程), 并提示一次性"清理并重载"——因为已导入的工程持久化在语言服务器工作区里, 必须 `java.clean.workspace` 重建后排除才生效。清理后 Eclipse 首次索引约 30-60 分钟, 此后不再需要。也可手动执行 `AOSP: Fix Eclipse Metadata Blockers`。
 
 注: 只有 `.project` 而无 `.classpath` 的目录 (如 nvim 插件留下的 `packages/modules/Connectivity/.project`) 无害, 不会被 guard 处理。
+
+### Java 报 "Syntax Server ... -32097" 或 "An error has occurred ... config_ss_linux"
+
+redhat.java 的 Syntax Server (启动加速用的辅助服务, 与主服务共用一份共享配置目录) 在多窗口同时 reload 时可能被损坏 (典型场景: 刚安装/升级完插件), 之后每次启动都报 `couldn't create connection to server (-32097)`。跳转本身不受影响 (导航由主服务提供), 修复一次即可:
+
+```bash
+EXT=$(ls -d <DATA>/extensions/redhat.java-*/ | head -1)
+GS=<DATA>/user-data/User/globalStorage/redhat.java/1.56.0
+cp "$EXT/server/config_ss_linux/config.ini" "$GS/config_ss_linux/config.ini"
+```
+
+`<DATA>`: Remote-WSL 下是 `~/.vscode-server/data`, 便携/自解压安装是 `<安装目录>/data`。拷贝后 reload 窗口。
 
 ### Diagnostics 显示 `jdt.ls.vmargs ⚠`
 

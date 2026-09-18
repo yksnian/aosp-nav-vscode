@@ -11,11 +11,10 @@ export function setBlocked(n: number): void {
   blocked = n;
   if (n > 0) {
     item.text = `$(warning) AOSP:${n} stale`;
-    item.tooltip = new vscode.MarkdownString(
-      `**AOSP Dev** blocked\n\n` +
-      `${n} 个 Eclipse 元数据目录阻止了依赖注入 (点击查看诊断, 或运行\n` +
-      `\`AOSP: Fix Eclipse Metadata Blockers\`)。`
-    );
+    item.tooltip = new vscode.MarkdownString(vscode.l10n.t(
+      "**AOSP Dev** blocked\n\n{0} stale Eclipse metadata dir(s) are blocking dependency injection. Click for diagnostics or run 'AOSP: Fix Eclipse Metadata Blockers'.",
+      n
+    ));
     item.show();
   }
 }
@@ -29,29 +28,26 @@ export function initStatus(ctx: vscode.ExtensionContext): void {
 
 export function statusScanning(): void {
   item.text = "$(sync~spin) AOSP";
-  item.tooltip = "AOSP: scanning soong intermediates...";
+  item.tooltip = vscode.l10n.t("AOSP: scanning soong intermediates...");
   item.show();
 }
 
 export function statusReady(jars: number, fromCache: boolean, root: string): void {
+  const origin = fromCache ? vscode.l10n.t("cached") : vscode.l10n.t("fresh scan");
   if (blocked > 0) {
     item.text = `$(warning) AOSP:${jars}`;
-    item.tooltip = new vscode.MarkdownString(
-      `**AOSP Dev** jars 已注入, 但被 ${blocked} 个 Eclipse 元数据目录阻止生效\n\n` +
-      `- jars: ${jars} (${fromCache ? "cached" : "fresh scan"})\n` +
-      `- root: ${root}\n\n` +
-      `运行 \`AOSP: Fix Eclipse Metadata Blockers\` 清理并重载 (一次性)。`
-    );
+    item.tooltip = new vscode.MarkdownString(vscode.l10n.t(
+      "**AOSP Dev** jars injected but blocked by {0} stale Eclipse metadata dir(s)\n\n- jars: {1} ({2})\n- root: {3}\n\nRun 'AOSP: Fix Eclipse Metadata Blockers' for the one-time clean + reload.",
+      blocked, jars, origin, root
+    ));
     item.show();
     return;
   }
   item.text = `$(check) AOSP:${jars}`;
-  item.tooltip = new vscode.MarkdownString(
-    `**AOSP Dev** ready\n\n` +
-    `- jars: ${jars} (${fromCache ? "cached" : "fresh scan"})\n` +
-    `- root: ${root}\n\n` +
-    `Click for diagnostics.`
-  );
+  item.tooltip = new vscode.MarkdownString(vscode.l10n.t(
+    "**AOSP Dev** ready\n\n- jars: {0} ({1})\n- root: {2}\n\nClick for diagnostics.",
+    jars, origin, root
+  ));
   item.show();
 }
 
@@ -61,23 +57,21 @@ export function statusIndexing(jars: number): void {
     return;
   }
   item.text = `$(sync~spin) AOSP:${jars}`;
-  item.tooltip = new vscode.MarkdownString(
-    `**Eclipse is indexing the classpath.**\n\n` +
-    `This is a one-time cost (30-60 min on large trees). CPU usage is normal.\n` +
-    `Do **not** restart the language server during this phase. Later opens are instant.`
-  );
+  item.tooltip = new vscode.MarkdownString(vscode.l10n.t(
+    "**Eclipse is indexing the classpath.**\n\nThis is a one-time cost (30-60 min on large trees). CPU usage is normal.\nDo **not** restart the language server during this phase. Later opens are instant."
+  ));
   item.show();
 }
 
 export function statusNoOut(): void {
   item.text = "$(warning) AOSP: no out";
-  item.tooltip = "AOSP root detected but no build outputs found. Build the tree first.";
+  item.tooltip = vscode.l10n.t("AOSP root detected but no build outputs found. Build the tree first.");
   item.show();
 }
 
 export function statusFailed(): void {
   item.text = "$(error) AOSP";
-  item.tooltip = "AOSP: scan failed. Run 'AOSP: Show Diagnostics' for details.";
+  item.tooltip = vscode.l10n.t("AOSP: scan failed. Run 'AOSP: Show Diagnostics' for details.");
   item.show();
 }
 
