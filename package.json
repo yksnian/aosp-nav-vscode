@@ -14,10 +14,10 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      { "command": "aosp-nav.rescan", "title": "AOSP: Rescan Jars", "category": "AOSP" },
-      { "command": "aosp-nav.diagnostics", "title": "AOSP: Show Diagnostics", "category": "AOSP" },
-      { "command": "aosp-nav.fixEclipseBlockers", "title": "AOSP: Fix Eclipse Metadata Blockers", "category": "AOSP" },
-      { "command": "aosp-nav.resetSettings", "title": "AOSP: Reset Plugin Settings", "category": "AOSP" }
+      { "command": "aosp-nav.rescan", "title": "Rescan Jars", "category": "AOSP" },
+      { "command": "aosp-nav.diagnostics", "title": "Show Diagnostics", "category": "AOSP" },
+      { "command": "aosp-nav.fixEclipseBlockers", "title": "Fix Eclipse Metadata Blockers", "category": "AOSP" },
+      { "command": "aosp-nav.resetSettings", "title": "Reset Plugin Settings", "category": "AOSP" }
     ],
     "configuration": {
       "title": "AOSP Dev",
