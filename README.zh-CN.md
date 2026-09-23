@@ -1,8 +1,8 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.4-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.5-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
-Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
+Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java/Kotlin 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
 
 本插件是 [aosp-nav.nvim](https://github.com/yksnian/aosp-nav.nvim) 的 VSCode 版本, 两者共享同一套 jar 选择算法与规则数据。
 
@@ -22,6 +22,7 @@ aosp-nav 自动弥合这个鸿沟:
 
 - VSCode >= 1.85
 - [Java 语言支持](https://marketplace.visualstudio.com/items?itemName=redhat.java) (`redhat.java`)——通过 `extensionDependencies` 自动安装
+- 可选, Kotlin 跳转: [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`)——见 [Kotlin 支持](#kotlin-支持实验性)
 - **已编译**的 AOSP 树 (存在 `out/soong/.intermediates`)
 
 大代码树建议调高语言服务器堆内存 (用户 settings.json):
@@ -63,6 +64,7 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 | `aosp-nav.excludeGlobs`  | `[]`       | 匹配 `.intermediates/` 之后相对路径的正则。用 `^` 锚定可精确到顶层目录, 如 `"^packages/apps/"` |
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = 用户列表追加到默认值后; `replace` = 丢弃默认值    |
 | `aosp-nav.settingsScope` | `"workspace"` | `referencedLibraries` 写入位置: `workspace` (仓库内 `.vscode/settings.json`, 不影响其他 Java 工程) 或 `global` (用户 settings, 多窗口共享, 但绝对路径 jar 会污染非 AOSP 的 Java 工程)。0.1.2 起写入不再需要确认; 切换 scope 时插件会自动清掉自己先前写在另一层的旧列表 |
+| `aosp-nav.kotlin.enabled` | `false` | 实验性: 将同一份 jar 列表经 fwcd kotlin-language-server 的全局 classpath 脚本注入 (见 [Kotlin 支持](#kotlin-支持实验性)) |
 
 多仓库窗口说明: `global` 档下, 同一窗口打开不同子仓库的文件时注入 jar 的**并集** (重叠度本来就很高)。默认 `workspace` 档按仓库写入——每个子仓库用独立窗口打开即可获得严格的 per-repo classpath。
 
@@ -81,6 +83,16 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 5. **桩家族默认排除**: `*stubs*`、`*-stub` (sysprop-library-stub-* 等)、`*-headers` (framework-minus-apex-headers)、`^jrt-fs.jar$`、预构建 module SDK 桩 (`^prebuilts/sdk/sdk_`), 以及 R/lint/dex/srcjars/kapt jar。
 
 6. **目录优先级排序**: `packages/modules/` > `frameworks/`、`libcore/`、… > `external/`、`tools/` > `prebuilts/` 与未知目录。classpath 有序且 JDT 按序取类——即使有漏网桩也永远排在真身之后。
+
+## Kotlin 支持 (实验性)
+
+`Ctrl+Shift+P` -> `Open User Settings (JSON)`, 设置 `aosp-nav.kotlin.enabled: true` 并安装 [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`, fwcd kotlin-language-server 的官方配套; 首次使用会下载语言服务器, 需联网一次)。插件随后把 **同一份 jar 列表** 喂给 Kotlin 语言服务器:
+
+1. **注入** —— 每个根的 jar 列表写入 `~/.config/kotlin-language-server/aosp-nav/`, 并维护服务器的全局 classpath 脚本 (`~/.config/kotlin-language-server/classpath`)。脚本按 workspace root 分发: AOSP 根输出其 jar 列表; 其他目录输出空, fwcd 回落到正常的 gradle/maven 解析——树内散落的 `build.gradle` 永远不会被碰, 也无需任何导入器开关。
+2. **护栏** —— 已存在的用户自管 classpath 脚本不会被覆盖; 插件不接管该通道并警告一次。删除或改名该脚本即可让本插件接管。
+3. **回滚** —— `AOSP: Reset Plugin Settings` 移除脚本与 jar 列表; 用户自管脚本不受影响。
+
+预期体验: 与 Java 通道一致——已打开的文件按源码解析; 只存在于 jar 中的类型 (AIDL、proto、aconfig) 落在反编译视图。Java→Kotlin 跳转在开关关闭时即可用——`kotlinc` jar 本就在注入列表中。
 
 ## FAQ
 
@@ -132,6 +144,10 @@ AOSP 树内散落着少量 build.gradle (如 frameworks/base/tests/UiBench)。�
 ### 修改排除配置后不生效
 
 会生效的——缓存头带有排除配置指纹, 修改配置会立即触发重扫 (无需重新打开 Java 文件)。若确实没生效, 带 diagnostics 输出提 issue (那是 bug)。
+
+### Kotlin 跳转不工作
+
+检查 `AOSP: Show Diagnostics` 的 `kotlin` 行: 扩展必须是 `fwcd.kotlin` 且需联网下载语言服务器。
 
 ### Windows / WSL
 

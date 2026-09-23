@@ -14,6 +14,8 @@ import { ensureJavaExtension } from "./jdtls/depManager";
 import { applyOnce as applyCompat, resetWritten } from "./jdtls/compat";
 import { apply as applyHygiene } from "./jdtls/workspaceHygiene";
 import { guardWorkspace, cleanAndReload, clearOwnExclusions, getLastReports, isCleanPending } from "./jdtls/eclipseGuard";
+import { applyKotlinClasspath, probeKotlinChannel, clearKotlinChannel } from "./kotlin/classpathChannel";
+import { ensureKotlinExtension } from "./kotlin/depManager";
 import * as status from "./status";
 import { invalidateCache } from "./commands/rescan";
 import { openOutput, printDiagnostics, DiagLine } from "./commands/diagnostics";
@@ -108,6 +110,13 @@ export function activate(ctx: vscode.ExtensionContext): void {
       }
 
       s.jars = jars;
+      // kotlin channel: same jar list, fed to fwcd kotlin-language-server
+      // via its global classpath script (independent of the java write
+      // below, so a java settings failure does not kill kotlin nav)
+      if (cfg.kotlinEnabled) {
+        await applyKotlinClasspath(ctx, root, jars, (m) => channel.appendLine(m));
+        void ensureKotlinExtension();
+      }
       const res = await applyReferencedLibraries(ctx, cfg.settingsScope, jars, (m) => channel.appendLine(m));
       if (!res.inEffect) {
         // write failed (e.g. settings not writable): keep the session
@@ -146,7 +155,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
   const onFile = async (uri: vscode.Uri | undefined): Promise<void> => {
     if (!uri || uri.scheme !== "file") return;
     const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
-    if (doc && doc.languageId !== "java") return;
+    if (doc && doc.languageId !== "java" && doc.languageId !== "kotlin") return;
     const cfg = getConfig();
     if (!cfg.enabled) return;
     const root = cfg.androidRoot ?? await detectAospRoot(uri.fsPath);
@@ -205,6 +214,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       await resetWritten(ctx);
       await clearOwnWorkspaceLibs(ctx);
       await clearOwnExclusions(ctx);
+      await clearKotlinChannel(ctx);
       void vscode.window.showInformationMessage(vscode.l10n.t("[aosp-nav] settings written by the plugin have been rolled back"));
     }),
     vscode.commands.registerCommand("aosp-nav.diagnostics", async () => {
@@ -232,6 +242,26 @@ export function activate(ctx: vscode.ExtensionContext): void {
       lines.push({ ok: rlCount > 0, label: "referencedLibraries", detail: `${rlCount} entries` });
       lines.push({ ok: jc.get("import.gradle.enabled") === false, label: "import.gradle.enabled", detail: String(jc.get("import.gradle.enabled")) });
       lines.push({ ok: jc.get("import.maven.enabled") === false, label: "import.maven.enabled", detail: String(jc.get("import.maven.enabled")) });
+      // kotlin channel
+      const kEnabled = getConfig().kotlinEnabled;
+      const kExt = vscode.extensions.getExtension("fwcd.kotlin");
+      lines.push({
+        ok: kEnabled ? !!kExt : null,
+        label: "kotlin",
+        detail: `enabled=${kEnabled}, fwcd.kotlin=${kExt ? `${kExt.packageJSON.version} (${kExt.isActive ? "active" : "inactive"})` : "NOT INSTALLED"}`,
+      });
+      if (root) {
+        const kp = await probeKotlinChannel(root);
+        lines.push({
+          ok: kp.script === "ours" ? true : kp.script === "user" ? false : null,
+          label: "kotlin classpath script",
+          detail: kp.script === "ours"
+            ? `ours, ${kp.jars} jars`
+            : kp.script === "user"
+              ? "user-managed, aosp-nav will not take over"
+              : "not written",
+        });
+      }
       const vmargs = vscode.workspace.getConfiguration("java").get<string>("jdt.ls.vmargs") ?? "";
       lines.push({
         ok: vmargs.includes("-Xmx"),

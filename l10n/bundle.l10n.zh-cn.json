@@ -17,5 +17,7 @@
   "**AOSP Dev** ready\n\n- jars: {0} ({1})\n- root: {2}\n\nClick for diagnostics.": "**AOSP Dev** 就绪\n\n- jars: {0} ({1})\n- root: {2}\n\n点击查看诊断。",
   "**Eclipse is indexing the classpath.**\n\nThis is a one-time cost (30-60 min on large trees). CPU usage is normal.\nDo **not** restart the language server during this phase. Later opens are instant.": "**Eclipse 正在索引 classpath。**\n\n这是一次性开销 (大树约 30-60 分钟)。CPU 占用高属正常。\n此阶段请**勿**重启语言服务器。之后每次打开为秒级。",
   "AOSP root detected but no build outputs found. Build the tree first.": "已检测到 AOSP 根, 但没有构建产物。请先编译整个树。",
-  "AOSP: scan failed. Run 'AOSP: Show Diagnostics' for details.": "AOSP: 扫描失败。运行 'AOSP: Show Diagnostics' 查看详情。"
+  "AOSP: scan failed. Run 'AOSP: Show Diagnostics' for details.": "AOSP: 扫描失败。运行 'AOSP: Show Diagnostics' 查看详情。",
+  "[aosp-nav] A user-managed kotlin-language-server classpath script already exists; aosp-nav will not take over the Kotlin classpath channel.": "[aosp-nav] 已存在用户自管的 kotlin-language-server classpath 脚本, aosp-nav 不会接管 Kotlin classpath 通道。",
+  "[aosp-nav] Kotlin extension (fwcd.kotlin, vscode-kotlin) is not installed; Kotlin navigation is unavailable until it is installed. The classpath script is already in place.": "[aosp-nav] Kotlin 扩展 (fwcd.kotlin, vscode-kotlin) 未安装, 安装前无法提供 Kotlin 跳转。classpath 脚本已就位, 安装后即生效。"
 }

@@ -1,8 +1,8 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.4-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.5-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
-Instant source navigation for Android (AOSP) in VSCode — go-to-definition, completion and reference resolution across **all** Java modules (frameworks/base, packages/modules/*, system_server services, ...), with zero manual project setup.
+Instant source navigation for Android (AOSP) in VSCode — go-to-definition, completion and reference resolution across **all** Java and Kotlin modules (frameworks/base, packages/modules/*, system_server services, ...), with zero manual project setup.
 
 The VSCode counterpart of [aosp-nav.nvim](https://github.com/yksnian/aosp-nav.nvim); both share the same jar-selection algorithm and rule data.
 
@@ -22,6 +22,7 @@ aosp-nav bridges that gap automatically:
 
 - VSCode >= 1.85
 - [Language Support for Java](https://marketplace.visualstudio.com/items?itemName=redhat.java) (`redhat.java`) — installed automatically via `extensionDependencies`
+- Optional, Kotlin navigation: [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`) — see [Kotlin support](#kotlin-support-experimental)
 - A **compiled** AOSP tree (`out/soong/.intermediates` present)
 
 Recommended for large trees — raise the language server heap (user settings):
@@ -63,6 +64,7 @@ Exclusion lists use **append** semantics by default: your entries are added afte
 | `aosp-nav.excludeGlobs`  | `[]`       | Regex on the path relative to `.intermediates/`. Anchor with `^` for top-level precision, e.g. `"^packages/apps/"` |
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = user lists added after defaults; `replace` = defaults discarded |
 | `aosp-nav.settingsScope` | `"workspace"` | Where `referencedLibraries` is written: `workspace` (`.vscode/settings.json` inside the repo, no impact on other Java projects) or `global` (user settings, shared across windows, but absolute jar paths pollute non-AOSP Java projects). Since 0.1.2 the write needs no confirmation; switching scope auto-clears our previous list from the other layer |
+| `aosp-nav.kotlin.enabled` | `false` | Experimental: feed the same jar list to the fwcd kotlin-language-server via its global classpath script (see [Kotlin support](#kotlin-support-experimental)) |
 
 Notes on multi-repo windows: with the `global` scope, opening files from different sub-checkouts in one window injects the **union** of jars (they heavily overlap anyway). With the default `workspace` scope the list is written per repo — open each sub-checkout in its own window for strictly per-repo classpaths.
 
@@ -76,6 +78,16 @@ Notes on multi-repo windows: with the `global` scope, opening files from differe
 4. **pre-jarjar dedup**: soong exports `<name>-pre-jarjar` modules with pre-rename classes sharing FQNs with the base module; dropped when the base module has its own artifact, kept as orphans otherwise.
 5. **Stub families excluded by default**: `*stubs*`, `*-stub` (sysprop-library-stub-*), `*-headers` (framework-minus-apex-headers), `^jrt-fs.jar$`, prebuilt module-SDK stubs (`^prebuilts/sdk/sdk_`), plus R/lint/dex/srcjars/kapt jars.
 6. **Directory-priority ordering**: `packages/modules/` > `frameworks/`, `libcore/`, ... > `external/`, `tools/` > `prebuilts/` & unknown. The classpath is ordered and JDT takes the first hit, so even an unnoticed stub always sorts behind its real implementation.
+
+## Kotlin support (experimental)
+
+`Ctrl+Shift+P` -> `Open User Settings (JSON)`, set `aosp-nav.kotlin.enabled: true` and install [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`) — the companion of fwcd kotlin-language-server; it downloads the language server on first use, so one online start is needed. The plugin then feeds the **same jar list** to the Kotlin language server:
+
+1. **Inject** — per-root jar lists go to `~/.config/kotlin-language-server/aosp-nav/`, and the server's global classpath script (`~/.config/kotlin-language-server/classpath`) is kept up to date. The script dispatches on the workspace root: AOSP roots get their jars; everything else prints nothing and fwcd falls back to its normal gradle/maven resolution — the stray `build.gradle` files in the tree are never touched, no importer switches needed.
+2. **Guard** — a user-managed classpath script is never overwritten; the plugin stays off that channel and warns once. Remove or rename the script to let this plugin take over.
+3. **Rollback** — `AOSP: Reset Plugin Settings` removes the script and jar lists; user-managed scripts are untouched.
+
+What to expect: navigation mirrors the Java channel — opened files resolve source-level, types that live only in jars (AIDL, proto, aconfig) land in the decompiled view. Java→Kotlin jumps already work with the setting off, since `kotlinc` jars have been part of the injected list all along.
 
 ## FAQ
 
@@ -127,6 +139,10 @@ Run `AOSP: Show Diagnostics` and check: root detected? jar count sane (~1200–1
 ### Changing exclusion settings doesn't take effect
 
 It does — the cache header carries a fingerprint of the exclusion config, and a configuration change immediately triggers a rescan (no need to reopen a Java file). If it truly doesn't, report with diagnostics (that would be a bug).
+
+### Kotlin navigation doesn't work
+
+Check the `kotlin` lines in `AOSP: Show Diagnostics`: the extension must be `fwcd.kotlin` and vscode-kotlin needs one online start to download the language server.
 
 ### Windows / WSL
 

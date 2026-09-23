@@ -3,13 +3,13 @@
   "displayName": "Android Source Navigation",
   "description": "go-to-definition and completion across all android java modules",
   "publisher": "yksnian",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/yksnian/aosp-nav-vscode" },
   "icon": "icon.png",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Programming Languages", "Other"],
-  "activationEvents": ["onLanguage:java"],
+  "activationEvents": ["onLanguage:java", "onLanguage:kotlin"],
   "extensionDependencies": ["redhat.java"],
   "main": "./out/extension.js",
   "contributes": {
@@ -65,7 +65,7 @@
         "aosp-nav.kotlin.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Kotlin support (experimental, P1)"
+          "description": "Kotlin support (experimental)"
         }
       }
     }
