@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.5-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Instant source navigation for Android (AOSP) in VSCode — go-to-definition, completion and reference resolution across **all** Java and Kotlin modules (frameworks/base, packages/modules/*, system_server services, ...), with zero manual project setup.
 
