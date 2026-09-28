@@ -89,8 +89,8 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 `Ctrl+Shift+P` -> `Open User Settings (JSON)`, 设置 `aosp-nav.kotlin.enabled: true` 并安装 [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`, fwcd kotlin-language-server 的官方配套; 首次使用会下载语言服务器, 需联网一次)。插件随后把 **同一份 jar 列表** 喂给 Kotlin 语言服务器:
 
 1. **注入** —— 每个根的 jar 列表写入 `~/.config/kotlin-language-server/aosp-nav/`, 并维护服务器的全局 classpath 脚本 (`~/.config/kotlin-language-server/classpath`)。脚本按 workspace root 分发: AOSP 根输出其 jar 列表; 其他目录输出空, fwcd 回落到正常的 gradle/maven 解析——树内散落的 `build.gradle` 永远不会被碰, 也无需任何导入器开关。
-2. **护栏** —— 已存在的用户自管 classpath 脚本不会被覆盖; 插件不接管该通道并警告一次。删除或改名该脚本即可让本插件接管。
-3. **回滚** —— `AOSP: Reset Plugin Settings` 移除脚本与 jar 列表; 用户自管脚本不受影响。
+2. **护栏与家族接管** —— 陌生用户自管的 classpath 脚本不会被覆盖 (插件不接管该通道并警告一次); 而 [aosp-nav.nvim](https://github.com/yksnian/aosp-nav.nvim) 生成的脚本会被识别为家族脚本: 移动为 `classpath.nvim.bak` 并作为分发脚本的 fallback 分支 (未注册的 root 仍走 nvim 逻辑: make-era 树、兄弟 checkout、jar fallback 目录), 且 aosp-nav.nvim 认得本插件的标记、不会反向覆盖——不会乒乓。
+3. **回滚** —— `AOSP: Reset Plugin Settings` 移除脚本与 jar 列表, 并在接管过家族脚本时从 `classpath.nvim.bak` 还原; 陌生脚本不受影响。
 
 预期体验: 与 Java 通道一致——已打开的文件按源码解析; 只存在于 jar 中的类型 (AIDL、proto、aconfig) 落在反编译视图。Java→Kotlin 跳转在开关关闭时即可用——`kotlinc` jar 本就在注入列表中。
 
@@ -147,7 +147,7 @@ AOSP 树内散落着少量 build.gradle (如 frameworks/base/tests/UiBench)。�
 
 ### Kotlin 跳转不工作
 
-检查 `AOSP: Show Diagnostics` 的 `kotlin` 行: 扩展必须是 `fwcd.kotlin` 且需联网下载语言服务器。
+检查 `AOSP: Show Diagnostics` 的 `kotlin` 行: 扩展必须是 `fwcd.kotlin`, classpath 脚本须显示 `ours` 或家族接管状态 (后者在下次注入时自动接管), 且需联网下载语言服务器。
 
 ### Windows / WSL
 

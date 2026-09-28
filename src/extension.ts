@@ -253,13 +253,15 @@ export function activate(ctx: vscode.ExtensionContext): void {
       if (root) {
         const kp = await probeKotlinChannel(root);
         lines.push({
-          ok: kp.script === "ours" ? true : kp.script === "user" ? false : null,
+          ok: kp.script === "ours" ? true : kp.script === "family-nvim" ? true : kp.script === "user" ? false : null,
           label: "kotlin classpath script",
           detail: kp.script === "ours"
             ? `ours, ${kp.jars} jars`
-            : kp.script === "user"
-              ? "user-managed, aosp-nav will not take over"
-              : "not written",
+            : kp.script === "family-nvim"
+              ? "family (aosp-nav.nvim) in place, taken over on next injection"
+              : kp.script === "user"
+                ? "user-managed, aosp-nav will not take over"
+                : "not written",
         });
       }
       const vmargs = vscode.workspace.getConfiguration("java").get<string>("jdt.ls.vmargs") ?? "";
