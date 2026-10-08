@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.7-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java/Kotlin 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
 
@@ -49,7 +49,7 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 | `AOSP: Rescan Jars`           | 清除 jar 缓存并重扫 (同时重跑 eclipse guard)                  |
 | `AOSP: Show Diagnostics`      | 结构化自检报告 (root/缓存/settings/扩展状态/guard)——提 issue 时请附上 |
 | `AOSP: Fix Eclipse Metadata Blockers` | 对遗留 Eclipse 元数据目录执行一次性"清理并重载"        |
-| `AOSP: Reset Plugin Settings` | 回滚本插件写入过的所有 settings (含 workspace 层)             |
+| `AOSP: Reset Plugin Settings` | 移除本插件添加过的所有设置 (含 workspace 层); 合并过的键保留你自己的条目 |
 
 ## 配置
 
@@ -60,10 +60,10 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 | `aosp-nav.enabled`       | `true`     | 启用插件                                                     |
 | `aosp-nav.androidRoot`   | `null`     | 显式指定 AOSP 根; null 时按打开文件自动检测                  |
 | `aosp-nav.excludeJars`   | `[]`       | 正则, 同时匹配 jar 文件名与模块名, 如 `"fake"` 排除所有含 fake 的 jar/模块 |
-| `aosp-nav.excludePaths`  | `[]`       | 完整路径的子串关键词, 如 `"external/cronet"`                 |
+| `aosp-nav.excludePaths`  | `[]`       | 相对于 `.intermediates/` 的 jar 路径子串关键词 (与 `excludeGlobs` 同基准), 如 `"external/cronet"` |
 | `aosp-nav.excludeGlobs`  | `[]`       | 匹配 `.intermediates/` 之后相对路径的正则。用 `^` 锚定可精确到顶层目录, 如 `"^packages/apps/"` |
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = 用户列表追加到默认值后; `replace` = 丢弃默认值    |
-| `aosp-nav.settingsScope` | `"workspace"` | `referencedLibraries` 写入位置: `workspace` (仓库内 `.vscode/settings.json`, 不影响其他 Java 工程) 或 `global` (用户 settings, 多窗口共享, 但绝对路径 jar 会污染非 AOSP 的 Java 工程)。0.1.2 起写入不再需要确认; 切换 scope 时插件会自动清掉自己先前写在另一层的旧列表 |
+| `aosp-nav.settingsScope` | `"workspace"` | `referencedLibraries` 与 Gradle/Maven 导入器开关的写入位置: `workspace` (仓库内 `.vscode/settings.json`, 不影响其他 Java 工程) 或 `global` (用户 settings, 多窗口共享, 但绝对路径 jar 会污染非 AOSP 的 Java 工程)。0.1.2 起写入不再需要确认; 切换 scope 时插件会自动清掉自己先前写在另一层的旧列表。你自己改回 `true` 的开关插件不会再动 |
 | `aosp-nav.kotlin.enabled` | `false` | 实验性: 将同一份 jar 列表经 fwcd kotlin-language-server 的全局 classpath 脚本注入 (见 [Kotlin 支持](#kotlin-支持实验性)) |
 
 多仓库窗口说明: `global` 档下, 同一窗口打开不同子仓库的文件时注入 jar 的**并集** (重叠度本来就很高)。默认 `workspace` 档按仓库写入——每个子仓库用独立窗口打开即可获得严格的 per-repo classpath。
@@ -128,12 +128,14 @@ cp "$EXT/server/config_ss_linux/config.ini" "$GS/config_ss_linux/config.ini"
 
 ### 卡在 "Importing Gradle project(s)" / "Validating Gradle wrapper checksum"
 
-AOSP 树内散落着少量 build.gradle (如 frameworks/base/tests/UiBench)。插件会自动禁用两个导入器; 若你手动管理 settings (或使用旧版本), 请确认用户 settings.json 含以下两条后 reload:
+AOSP 树内散落着少量 build.gradle (如 frameworks/base/tests/UiBench)。插件会自动禁用两个导入器, 写在 `aosp-nav.settingsScope` 指定的层 (默认是仓库内 `.vscode/settings.json`, 因此你自己的其他 Java 工程仍保留 Gradle 支持)。若需手动设置 (或使用旧版本), 加上:
 
 ```jsonc
 "java.import.gradle.enabled": false,
 "java.import.maven.enabled": false
 ```
+
+插件只会在任何层都没有显式值时写入, 因此你显式设的 `true` 不会被下次打开覆盖。
 
 注: 旧版插件还写过 `java.import.gradle.wrapper.checksums`——该 key 上游已改名(`java.imports.gradle.wrapper.checksums`), 且 gradle 导入禁用后本就无效; 插件已不再写入, settings 中的残留条目可删。
 

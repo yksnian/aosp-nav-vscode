@@ -1,7 +1,10 @@
 import { ExclusionConfig } from "./types";
 import { djb2 } from "../infra/hash";
 
-export const CACHE_VERSION = 6;
+// 7: excludePaths switched from absolute-path matching to the path relative to
+// .intermediates/. The rule change narrows what is excluded, so a list cached
+// by 6 could be missing jars this version keeps — force one rescan on upgrade.
+export const CACHE_VERSION = 7;
 
 export interface CacheFile {
   version: number;

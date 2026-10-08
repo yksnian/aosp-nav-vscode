@@ -17,8 +17,12 @@ export class FilterEngine {
     for (const re of this.jarRes) {
       if (re.test(jarName) || re.test(e.moduleName)) return true;
     }
+    // Match against the path relative to .intermediates/, never the absolute
+    // one: a keyword like the default "development/" would otherwise match the
+    // AOSP checkout prefix itself (e.g. ~/development/aosp13) and exclude
+    // every jar in the tree.
     for (const kw of this.pathKw) {
-      if (e.absPath.includes(kw)) return true;
+      if (e.relPath.includes(kw)) return true;
     }
     for (const re of this.globRes) {
       if (re.test(e.relPath)) return true;

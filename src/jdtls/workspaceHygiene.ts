@@ -1,7 +1,5 @@
 import * as vscode from "vscode";
-import { record } from "./compat";
-
-const EXCLUDES = ["**/out/**", "**/.repo/**"];
+import { record, APPENDED_EXCLUDES as EXCLUDES } from "./compat";
 
 /** One-time hygiene: keep vscode's file watcher/search away from the huge
  *  out/ tree. Idempotent: merges missing entries into the GLOBAL layer only,
@@ -26,7 +24,7 @@ export async function apply(
     for (const e of missing) next[e] = true;
     try {
       await conf.update(key, next, vscode.ConfigurationTarget.Global);
-      await record(ctx, `${section}.${key}`);
+      await record(ctx, `${section}.${key}`, "global");
     } catch (err) {
       log(`[aosp-nav] warn: failed to write ${section}.${key}: ${err}`);
     }

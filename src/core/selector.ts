@@ -8,8 +8,15 @@ export function applyDirPriority(jars: string[], defaults: Defaults): void {
     return { re: new RegExp(pat), rank };
   });
   const rankOf = (jar: string): number => {
-    const m = /\.intermediates\/(.+)$/.exec(jar);
-    const rel = m?.[1] ?? jar;
+    // The rules (shared with aosp-nav.nvim) are POSIX: on Windows every path
+    // arrives with `\` and neither the .intermediates/ split nor a pattern like
+    // `^frameworks/` would ever match, collapsing all ranks to the fallback and
+    // silently dropping the "real implementation sorts before any stub"
+    // guarantee. Normalize backslashes explicitly rather than via path.sep so
+    // the behavior is the same on every platform (and testable from one).
+    const norm = jar.replace(/\\/g, "/");
+    const m = /\.intermediates\/(.+)$/.exec(norm);
+    const rel = m?.[1] ?? norm;
     for (const { re, rank } of compiled) {
       if (re.test(rel)) return rank;
     }

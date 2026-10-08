@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.7-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Instant source navigation for Android (AOSP) in VSCode — go-to-definition, completion and reference resolution across **all** Java and Kotlin modules (frameworks/base, packages/modules/*, system_server services, ...), with zero manual project setup.
 
@@ -49,7 +49,7 @@ Messages follow the VS Code display language: Chinese for zh-cn, English everywh
 | `AOSP: Rescan Jars`           | Drop the jar cache and rescan (also re-runs the eclipse guard) |
 | `AOSP: Show Diagnostics`      | Structured self-check (root / cache / settings / extensions / guard) — attach it to issues |
 | `AOSP: Fix Eclipse Metadata Blockers` | Run the one-time clean+reload for leftover Eclipse metadata dirs |
-| `AOSP: Reset Plugin Settings` | Roll back every settings key this plugin has written (incl. workspace layer) |
+| `AOSP: Reset Plugin Settings` | Remove every setting this plugin added (incl. the workspace layer). Keys it merged into keep your own entries |
 
 ## Configuration
 
@@ -60,10 +60,10 @@ Exclusion lists use **append** semantics by default: your entries are added afte
 | `aosp-nav.enabled`       | `true`     | Enable the plugin                                            |
 | `aosp-nav.androidRoot`   | `null`     | Explicit AOSP root; auto-detected per opened file when null  |
 | `aosp-nav.excludeJars`   | `[]`       | Regex matched against jar file name AND module name, e.g. `"fake"` drops every jar/module containing it |
-| `aosp-nav.excludePaths`  | `[]`       | Substring keywords on the full path, e.g. `"external/cronet"` |
+| `aosp-nav.excludePaths`  | `[]`       | Substring keywords on the jar path relative to `.intermediates/` (same base as `excludeGlobs`), e.g. `"external/cronet"` |
 | `aosp-nav.excludeGlobs`  | `[]`       | Regex on the path relative to `.intermediates/`. Anchor with `^` for top-level precision, e.g. `"^packages/apps/"` |
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = user lists added after defaults; `replace` = defaults discarded |
-| `aosp-nav.settingsScope` | `"workspace"` | Where `referencedLibraries` is written: `workspace` (`.vscode/settings.json` inside the repo, no impact on other Java projects) or `global` (user settings, shared across windows, but absolute jar paths pollute non-AOSP Java projects). Since 0.1.2 the write needs no confirmation; switching scope auto-clears our previous list from the other layer |
+| `aosp-nav.settingsScope` | `"workspace"` | Where `referencedLibraries` and the Gradle/Maven importer switches are written: `workspace` (`.vscode/settings.json` inside the repo, no impact on other Java projects) or `global` (user settings, shared across windows, but absolute jar paths pollute non-AOSP Java projects). Since 0.1.2 the write needs no confirmation; switching scope auto-clears our previous list from the other layer. A switch you set back to `true` yourself is always left alone |
 | `aosp-nav.kotlin.enabled` | `false` | Experimental: feed the same jar list to the fwcd kotlin-language-server via its global classpath script (see [Kotlin support](#kotlin-support-experimental)) |
 
 Notes on multi-repo windows: with the `global` scope, opening files from different sub-checkouts in one window injects the **union** of jars (they heavily overlap anyway). With the default `workspace` scope the list is written per repo — open each sub-checkout in its own window for strictly per-repo classpaths.
@@ -123,12 +123,14 @@ The default heap is too small for 1000+ jars. Add `"java.jdt.ls.vmargs": "-Xmx8G
 
 ### Stuck at "Importing Gradle project(s)" / "Validating Gradle wrapper checksum"
 
-A few `build.gradle` files are scattered in the AOSP tree (e.g. `frameworks/base/tests/UiBench`). The plugin disables both importers automatically; if you manage settings manually (or run an older version), make sure the user settings.json contains the two switches below, then reload:
+A few `build.gradle` files are scattered in the AOSP tree (e.g. `frameworks/base/tests/UiBench`). The plugin disables both importers automatically, in the layer `aosp-nav.settingsScope` selects (the repo's `.vscode/settings.json` by default, so your other Java projects keep their Gradle support). If you need to set them yourself — or run an older version — add:
 
 ```jsonc
 "java.import.gradle.enabled": false,
 "java.import.maven.enabled": false
 ```
+
+The plugin only writes these when no layer has an explicit value, so an explicit `true` of yours is respected rather than overwritten on the next open.
 
 Note: older plugin versions also wrote `java.import.gradle.wrapper.checksums` — that key no longer exists upstream (renamed `java.imports.gradle.wrapper.checksums`) and was a no-op anyway once gradle import is disabled; it is no longer written and can be removed from settings.
 

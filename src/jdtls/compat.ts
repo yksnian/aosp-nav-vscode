@@ -1,13 +1,52 @@
 import * as vscode from "vscode";
+import { peelAppended } from "../core/peelExcludes";
 
 const WRITTEN_KEYS = "aosp-nav.writtenSettings"; // state key for rollback
 
-export async function record(ctx: vscode.ExtensionContext, key: string): Promise<void> {
-  const seen = ctx.globalState.get<string[]>(WRITTEN_KEYS) ?? [];
-  if (!seen.includes(key)) {
-    seen.push(key);
-    await ctx.globalState.update(WRITTEN_KEYS, seen);
+/** Entries this plugin appends to java.import.exclusions / files.watcherExclude
+ *  / search.exclude — single source of truth, shared with workspaceHygiene. */
+export const APPENDED_EXCLUDES = ["**/out/**", "**/.repo/**"];
+
+/** The merge-style keys, as [section, sub-key] — see resetWritten. */
+const MERGE_KEYS: Array<[string, string]> = [
+  ["java", "import.exclusions"],
+  ["files", "watcherExclude"],
+  ["search", "exclude"],
+];
+
+/** The switches we force to `false` (see applyOnce). */
+const IMPORTER_KEYS = ["import.gradle.enabled", "import.maven.enabled"];
+
+interface WrittenKey {
+  /** "<section>.<sub.key>", e.g. "java.import.exclusions" */
+  key: string;
+  /** layer we wrote to; the merge keys are peeled on every layer regardless */
+  layer: "global" | "workspace";
+}
+
+/** State written by <=0.1.6 held bare key names (strings); newer records are
+ *  objects. Both are accepted so an upgrade does not lose the rollback list. */
+function readWritten(ctx: vscode.ExtensionContext): WrittenKey[] {
+  const raw = ctx.globalState.get<Array<string | WrittenKey>>(WRITTEN_KEYS) ?? [];
+  return raw.map((e) => (typeof e === "string" ? { key: e, layer: "global" } : e));
+}
+
+export async function record(
+  ctx: vscode.ExtensionContext,
+  key: string,
+  layer: "global" | "workspace" = "global"
+): Promise<void> {
+  const seen = readWritten(ctx);
+  const hit = seen.find((e) => e.key === key);
+  if (hit) {
+    if (hit.layer !== layer) {
+      hit.layer = layer;
+      await ctx.globalState.update(WRITTEN_KEYS, seen);
+    }
+    return;
   }
+  seen.push({ key, layer });
+  await ctx.globalState.update(WRITTEN_KEYS, seen);
 }
 
 /** Content equality (arrays compare element-wise; === is reference-equal for
@@ -26,11 +65,12 @@ async function safeUpdate(
   jc: vscode.WorkspaceConfiguration,
   key: string,
   value: unknown,
+  target: vscode.ConfigurationTarget,
   log: (msg: string) => void
 ): Promise<boolean> {
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      await jc.update(key, value, vscode.ConfigurationTarget.Global);
+      await jc.update(key, value, target);
       return true;
     } catch (e) {
       if (attempt === 2) {
@@ -43,49 +83,126 @@ async function safeUpdate(
   return false;
 }
 
-/** AOSP compatibility switches. Only writes when the current value differs;
- *  never overwrites a user's explicit `false` with anything else. */
+/** AOSP compatibility switches.
+ *
+ *  The importer switches are written at the layer `aosp-nav.settingsScope`
+ *  selects (workspace by default), so a window that is not the AOSP repo is
+ *  left alone. They are only written when NO layer carries an explicit value:
+ *  a user who sets the switch back to `true` keeps it — previously the plugin
+ *  re-forced `false` on every activation, with no way to opt out. */
 export async function applyOnce(
   ctx: vscode.ExtensionContext,
+  scope: "global" | "workspace" = "global",
   log: (msg: string) => void = () => {}
 ): Promise<void> {
   const jc = vscode.workspace.getConfiguration("java");
+  // With no folder open there is no workspace layer to write to (a single-file
+  // window); fall back to global rather than leaving Gradle import enabled —
+  // the stray build.gradle files in a tree would be imported.
+  const workspaceLayer = scope === "workspace" && !!vscode.workspace.workspaceFolders?.length;
+  const target = workspaceLayer
+    ? vscode.ConfigurationTarget.Workspace
+    : vscode.ConfigurationTarget.Global;
+  if (scope === "workspace" && !workspaceLayer) {
+    log("[aosp-nav] no workspace folder open; writing the importer switches to the global layer instead");
+  }
 
-  const want: Array<[string, unknown]> = [
-    ["import.gradle.enabled", false],
-    ["import.maven.enabled", false],
-    // NOTE: java.import.gradle.wrapper.checksums was renamed upstream to
-    // java.imports.gradle.wrapper.checksums long ago; the old key is not a
-    // registered configuration, and update() on it throws CodeExpectedError.
-    // With gradle import disabled above, checksums are irrelevant anyway.
-  ];
+  for (const sub of IMPORTER_KEYS) {
+    const insp = jc.inspect<unknown>(sub);
+    if (insp?.workspaceValue === false || insp?.globalValue === false) continue; // already off
+    if (insp?.workspaceValue !== undefined || insp?.globalValue !== undefined) {
+      log(`[aosp-nav] java.${sub} is explicitly enabled by the user; leaving it alone`);
+      continue;
+    }
+    if (await safeUpdate(jc, sub, false, target, log)) {
+      await record(ctx, `java.${sub}`, workspaceLayer ? "workspace" : "global");
+    }
+  }
 
-  for (const [sub, value] of want) {
-    if (!sameValue(jc.get(sub), value)) {
-      if (await safeUpdate(jc, sub, value, log)) {
-        await record(ctx, `java.${sub}`);
+  // java.import.exclusions: append out/.repo (dedup), do not drop user entries.
+  // Deliberately always the GLOBAL layer, unlike the switches above: the eclipse
+  // guard manages the workspace layer of this same key with its own
+  // read-modify-write, and both run concurrently at activation — two writers on
+  // one layer could lose an update. The patterns are harmless to other projects
+  // (nothing imports a directory named out/ as an Eclipse project).
+  //
+  // The base is the global layer (or the registered default), NOT the effective
+  // value: layers override rather than merge for this key, so reading the
+  // effective value meant that whenever a workspace layer existed its entries
+  // were copied into global — a copy that did not even help, because the
+  // workspace layer went on winning for this window.
+  const exclInsp = jc.inspect<string[]>("import.exclusions");
+  const base = exclInsp?.globalValue ?? exclInsp?.defaultValue ?? [];
+  const missing = APPENDED_EXCLUDES.filter((w) => !base.includes(w));
+  if (missing.length > 0) {
+    const global = vscode.ConfigurationTarget.Global;
+    if (await safeUpdate(jc, "import.exclusions", [...base, ...missing], global, log)) {
+      await record(ctx, "java.import.exclusions", "global");
+    }
+  }
+  // A workspace-layer list shadows ours for this window. The eclipse guard
+  // copies the base into its own workspace write, so this is only worth
+  // reporting when that did not happen (a hand-written workspace list).
+  const wsExcl = exclInsp?.workspaceValue;
+  if (wsExcl && APPENDED_EXCLUDES.some((w) => !wsExcl.includes(w))) {
+    log(`[aosp-nav] warn: java.import.exclusions is overridden by the workspace layer, without ${APPENDED_EXCLUDES.join(", ")}`);
+  }
+}
+
+/** Reset every settings key the plugin has written (aosp-nav.resetSettings).
+ *
+ *  Merge-style keys are PEELED, not deleted: rest.join() used to run
+ *  `update(key, undefined)`, which took the user's own watcherExclude /
+ *  search.exclude / import.exclusions entries down with ours. Peel is applied
+ *  to every layer because the entries are known exactly, so it also covers
+ *  legacy (pre-0.1.7) records and a scope switch since the write.
+ *
+ *  The importer switches are only cleared when the value still is the `false`
+ *  we wrote — a user who set `false` themselves (the README FAQ tells them to)
+ *  keeps it. */
+export async function resetWritten(
+  ctx: vscode.ExtensionContext,
+  log: (msg: string) => void = () => {}
+): Promise<void> {
+  const seen = readWritten(ctx);
+
+  for (const [section, sub] of MERGE_KEYS) {
+    const conf = vscode.workspace.getConfiguration(section);
+    const insp = conf.inspect<unknown>(sub);
+    const layers: Array<[vscode.ConfigurationTarget, unknown]> = [
+      [vscode.ConfigurationTarget.Workspace, insp?.workspaceValue],
+      [vscode.ConfigurationTarget.Global, insp?.globalValue],
+    ];
+    for (const [target, value] of layers) {
+      const { value: next, changed } = peelAppended(value, APPENDED_EXCLUDES);
+      if (!changed) continue;
+      try {
+        await conf.update(sub, next, target);
+        log(`[aosp-nav] removed our entries from ${section}.${sub}`);
+      } catch (e) {
+        log(`[aosp-nav] warn: could not roll back ${section}.${sub}: ${e}`);
       }
     }
   }
 
-  // java.import.exclusions: append out/.repo (dedup), do not drop user entries
-  const exclusions = jc.get<string[]>("import.exclusions") ?? [];
-  const wanted = ["**/out/**", "**/.repo/**"];
-  const missing = wanted.filter((w) => !exclusions.includes(w));
-  if (missing.length > 0) {
-    if (await safeUpdate(jc, "import.exclusions", [...exclusions, ...missing], log)) {
-      await record(ctx, "java.import.exclusions");
+  for (const { key, layer } of seen) {
+    const [section, ...rest] = key.split(".");
+    const sub = rest.join(".");
+    if (MERGE_KEYS.some(([s, k]) => s === section && k === sub)) continue; // peeled above
+    if (section !== "java" || !IMPORTER_KEYS.includes(sub)) continue;
+    const conf = vscode.workspace.getConfiguration(section);
+    const target =
+      layer === "workspace" ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+    const insp = conf.inspect<unknown>(sub);
+    const cur = layer === "workspace" ? insp?.workspaceValue : insp?.globalValue;
+    if (cur !== false) continue; // not ours any more — the user's choice
+    try {
+      await conf.update(sub, undefined, target);
+      log(`[aosp-nav] restored default for java.${sub}`);
+    } catch (e) {
+      log(`[aosp-nav] warn: could not roll back java.${sub}: ${e}`);
     }
   }
-}
 
-/** Reset every settings key the plugin has written (aosp-nav.resetSettings). */
-export async function resetWritten(ctx: vscode.ExtensionContext): Promise<void> {
-  const seen = ctx.globalState.get<string[]>(WRITTEN_KEYS) ?? [];
-  for (const key of seen) {
-    const [section, ...rest] = key.split(".");
-    const conf = vscode.workspace.getConfiguration(section);
-    await conf.update(rest.join("."), undefined, vscode.ConfigurationTarget.Global);
-  }
   await ctx.globalState.update(WRITTEN_KEYS, undefined);
 }

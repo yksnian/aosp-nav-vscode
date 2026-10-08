@@ -40,8 +40,19 @@ export async function applyReferencedLibraries(
 ): Promise<ApplyResult> {
   const jc = vscode.workspace.getConfiguration("java");
   const inspect = jc.inspect<{ include?: string[] } | string[]>("project.referencedLibraries");
-  const effective = includeOf(inspect?.workspaceValue ?? inspect?.globalValue ?? inspect?.defaultValue);
-  if (sameList(effective, jars)) {
+  const wsList = includeOf(inspect?.workspaceValue);
+  const globalList = includeOf(inspect?.globalValue);
+
+  // "already applied" is judged per LAYER, not on the effective value: with the
+  // effective value, switching settingsScope from workspace to global looked
+  // like a no-op (the workspace list won, list matched), so neither the global
+  // write happened nor our workspace shadow got cleared — the setting silently
+  // did nothing until an unrelated rescan. The workspace layer shadows global,
+  // so for scope=global an identical-or-absent workspace list is required too.
+  const inEffect = scope === "workspace"
+    ? sameList(wsList, jars)
+    : (inspect?.workspaceValue === undefined || sameList(wsList, jars)) && sameList(globalList, jars);
+  if (inEffect) {
     return { changed: false, inEffect: true, written: jars.length };
   }
 
@@ -58,7 +69,6 @@ export async function applyReferencedLibraries(
   log(`[aosp-nav] referencedLibraries written to ${scope} layer: ${jars.length} jars`);
 
   if (scope === "global") {
-    const wsList = includeOf(inspect?.workspaceValue);
     const own = ctx.workspaceState.get<string[]>(OWN_WS_KEY);
     if (wsList.length > 0 && own && sameList(own, wsList)) {
       try {

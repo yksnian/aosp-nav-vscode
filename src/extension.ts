@@ -13,7 +13,7 @@ import { applyReferencedLibraries, clearOwnWorkspaceLibs } from "./jdtls/setting
 import { ensureJavaExtension } from "./jdtls/depManager";
 import { applyOnce as applyCompat, resetWritten } from "./jdtls/compat";
 import { apply as applyHygiene } from "./jdtls/workspaceHygiene";
-import { guardWorkspace, cleanAndReload, clearOwnExclusions, getLastReports, isCleanPending } from "./jdtls/eclipseGuard";
+import { guardWorkspace, cleanAndReload, clearOwnExclusions, getLastReports, getBlockedCount, isCleanPending } from "./jdtls/eclipseGuard";
 import { applyKotlinClasspath, probeKotlinChannel, clearKotlinChannel } from "./kotlin/classpathChannel";
 import { ensureKotlinExtension } from "./kotlin/depManager";
 import * as status from "./status";
@@ -64,7 +64,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         s.phase = "failed";
         return;
       }
-      await applyCompat(ctx, (m) => channel.appendLine(m));
+      await applyCompat(ctx, cfg.settingsScope, (m) => channel.appendLine(m));
       await applyHygiene(ctx, (m) => channel.appendLine(m));
 
       // cache
@@ -202,8 +202,11 @@ export function activate(ctx: vscode.ExtensionContext): void {
         });
     }),
     vscode.commands.registerCommand("aosp-nav.fixEclipseBlockers", async () => {
-      const n = getLastReports().reduce((a, r) => a + r.blockers.length + (r.rootBlocked ? 1 : 0), 0);
-      if (n === 0) {
+      // physical dirs keep existing after a successful fix, so this stays
+      // runnable whenever any are on disk — it is the escape hatch for "I
+      // dismissed the confirmation earlier" / "navigation is still broken".
+      const physical = getLastReports().reduce((a, r) => a + r.blockers.length + (r.rootBlocked ? 1 : 0), 0);
+      if (physical === 0 && getBlockedCount() === 0) {
         void vscode.window.showInformationMessage(
           vscode.l10n.t("[aosp-nav] No Eclipse metadata blockers to fix (if the workspace has not been scanned yet, open an AOSP java file first)."));
         return;
@@ -211,7 +214,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       await cleanAndReload(ctx, (m) => channel.appendLine(m));
     }),
     vscode.commands.registerCommand("aosp-nav.resetSettings", async () => {
-      await resetWritten(ctx);
+      await resetWritten(ctx, (m) => channel.appendLine(m));
       await clearOwnWorkspaceLibs(ctx);
       await clearOwnExclusions(ctx);
       await clearKotlinChannel(ctx);
@@ -240,8 +243,14 @@ export function activate(ctx: vscode.ExtensionContext): void {
       const rl = jc.get<unknown>("project.referencedLibraries");
       const rlCount = Array.isArray(rl) ? rl.length : (rl as { include?: string[] })?.include?.length ?? 0;
       lines.push({ ok: rlCount > 0, label: "referencedLibraries", detail: `${rlCount} entries` });
-      lines.push({ ok: jc.get("import.gradle.enabled") === false, label: "import.gradle.enabled", detail: String(jc.get("import.gradle.enabled")) });
-      lines.push({ ok: jc.get("import.maven.enabled") === false, label: "import.maven.enabled", detail: String(jc.get("import.maven.enabled")) });
+      // the switches live in the layer aosp-nav.settingsScope selects, so name
+      // it — "false" with no layer is not actionable when debugging
+      for (const sub of ["import.gradle.enabled", "import.maven.enabled"]) {
+        const insp = jc.inspect<unknown>(sub);
+        const where =
+          insp?.workspaceValue === false ? "workspace" : insp?.globalValue === false ? "global" : "unset";
+        lines.push({ ok: jc.get(sub) === false, label: sub, detail: `${String(jc.get(sub))} (${where})` });
+      }
       // kotlin channel
       const kEnabled = getConfig().kotlinEnabled;
       const kExt = vscode.extensions.getExtension("fwcd.kotlin");
@@ -273,15 +282,23 @@ export function activate(ctx: vscode.ExtensionContext): void {
       });
       // eclipse guard
       const pending = await isCleanPending(ctx);
+      const actionNeeded = getBlockedCount();
       for (const r of getLastReports()) {
         const n = r.blockers.length + (r.rootBlocked ? 1 : 0);
+        const needsAction = n > 0 && actionNeeded > 0;
         lines.push({
-          ok: n === 0,
+          ok: n === 0 ? true : needsAction ? false : null,
           label: `eclipse guard [${path.basename(r.folder)}]`,
           detail: n === 0
             ? "no stale .project/.classpath dirs"
-            : `${n} blocker(s)${r.rootBlocked ? " (workspace root itself has Eclipse metadata)" : ""}${pending ? ", clean+reload pending" : ""}`,
-          action: n > 0 ? "run 'AOSP: Fix Eclipse Metadata Blockers' (one-time clean + reload)" : undefined,
+            : needsAction
+              ? `${n} blocker(s)${r.rootBlocked ? " (workspace root itself has Eclipse metadata)" : ""}, clean+reload pending${pending ? "" : " (not re-armed)"}`
+              : `${n} dir(s) already excluded from import (ignored, not blocking)`,
+          action: needsAction
+            ? "run 'AOSP: Fix Eclipse Metadata Blockers' (one-time clean + reload)"
+            : n > 0
+              ? "if navigation is still broken, run 'AOSP: Fix Eclipse Metadata Blockers' once"
+              : undefined,
         });
       }
       if (getLastReports().length === 0) {
