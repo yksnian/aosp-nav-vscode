@@ -146,6 +146,25 @@ It does — the cache header carries a fingerprint of the exclusion config, and 
 
 Check the `kotlin` lines in `AOSP: Show Diagnostics`: the extension must be `fwcd.kotlin`, the classpath script must report `ours` or family status (an aosp-nav.nvim script is taken over automatically on the next open), and vscode-kotlin needs one online start to download the language server.
 
+### Kotlin Language Client: couldn't create connection to server / The Kotlin Language Client server crashed x times
+
+For example:
+```
+Exception in thread "main" java.lang.IllegalArgumentException: 25.0.4.1
+    at com.intellij.util.lang.JavaVersion.parse(JavaVersion.java:307)
+    ...
+    at org.javacs.kt.CompilerClassPath.<init>(CompilerClassPath.kt:32)
+    at org.javacs.kt.MainKt.main(Main.kt:42)
+```
+
+The Kotlin compiler bundled with [fwcd/kotlin-language-server](https://github.com/fwcd/kotlin-language-server) cannot parse a **four-part** version number, so a JDK such as `25.0.4.1` makes the server exit during construction; a three-part version like `21.0.8` is fine.
+
+Fix: point to a JDK with a **three-part** version number in user settings:
+
+```jsonc
+"kotlin.java.home": "/usr/lib/jvm/java-21-openjdk-amd64"
+```
+
 ### Windows / WSL
 
 The extension runs where the opened folder lives. With Remote-WSL, install the extension to the WSL side (`code --install-extension` from the WSL shell); the AOSP tree must be reachable from WSL.

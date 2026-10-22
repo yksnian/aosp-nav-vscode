@@ -151,6 +151,25 @@ AOSP 树内散落着少量 build.gradle (如 frameworks/base/tests/UiBench)。�
 
 检查 `AOSP: Show Diagnostics` 的 `kotlin` 行: 扩展必须是 `fwcd.kotlin`, classpath 脚本须显示 `ours` 或家族接管状态 (后者在下次注入时自动接管), 且需联网下载语言服务器。
 
+### Kotlin Language Client: couldn't create connection to server / The Kotlin Language Client server crashed x times
+如:
+```
+Exception in thread "main" java.lang.IllegalArgumentException: 25.0.4.1
+    at com.intellij.util.lang.JavaVersion.parse(JavaVersion.java:307)
+    ...
+    at org.javacs.kt.CompilerClassPath.<init>(CompilerClassPath.kt:32)
+    at org.javacs.kt.MainKt.main(Main.kt:42)
+```
+
+[fwcd/kotlin-language-server](https://github.com/fwcd/kotlin-language-server) 捆绑的 Kotlin 编译器无法解析**四段式**版本号, 因此 `25.0.4.1` 之类的 JDK 会让 server 在构造阶段直接退出; 三段式如 `21.0.8` 正常。
+
+解决办法:
+在用户 settings 中指定版本号为**三段式**的 JDK 路径(前提你装在机器上了):
+
+```jsonc
+"kotlin.java.home": "/usr/lib/jvm/java-21-openjdk-amd64"
+```
+
 ### Windows / WSL
 
 扩展运行在打开的文件夹所在一侧。Remote-WSL 场景下扩展需安装到 WSL 侧 (在 WSL 终端里 `code --install-extension`); AOSP 树需能从 WSL 访问。
