@@ -8,13 +8,13 @@ import { scanSoong } from "./core/scanner";
 import { applyDirPriority } from "./core/selector";
 import { FilterEngine } from "./core/filters";
 import { CACHE_VERSION, filtersHash, isCacheValid, CacheFile } from "./core/cacheModel";
-import { scanJars, isDirectory } from "./infra/fsScan";
+import { scanJars, isDirectory, anyJarMissing } from "./infra/fsScan";
 import { applyReferencedLibraries, clearOwnWorkspaceLibs } from "./jdtls/settingsChannel";
 import { ensureJavaExtension } from "./jdtls/depManager";
 import { applyOnce as applyCompat, resetWritten } from "./jdtls/compat";
 import { apply as applyHygiene } from "./jdtls/workspaceHygiene";
 import { guardWorkspace, cleanAndReload, clearOwnExclusions, getLastReports, getBlockedCount, isCleanPending } from "./jdtls/eclipseGuard";
-import { applyKotlinClasspath, probeKotlinChannel, clearKotlinChannel } from "./kotlin/classpathChannel";
+import { applyKotlinClasspath, probeKotlinChannel, clearKotlinChannel, pruneKotlinRootMap } from "./kotlin/classpathChannel";
 import { ensureKotlinExtension } from "./kotlin/depManager";
 import * as status from "./status";
 import { invalidateCache } from "./commands/rescan";
@@ -23,8 +23,31 @@ import { openOutput, printDiagnostics, DiagLine } from "./commands/diagnostics";
 let channel: vscode.OutputChannel;
 let defaultsJson: Awaited<ReturnType<typeof loadDefaults>>;
 const sessions = new Map<string, { phase: "idle" | "scanning" | "ready" | "failed"; jars: string[] }>();
-let running = false;
-let firstIndexNotified = false;
+/** One promise per root: repeated triggers for the same tree join the running
+ *  scan instead of returning early. */
+const inflight = new Map<string, Promise<void>>();
+const scanQueue: Array<{ root: string; release: () => void }> = [];
+/** Scans allowed to run at once. A single global `running` flag used to make a
+ *  multi-root window drop the second tree entirely; a small window keeps I/O
+ *  bounded while still letting both trees make progress. */
+const MAX_CONCURRENT_SCANS = 2;
+let activeScans = 0;
+/** Roots that already got the one-time "first Eclipse index" notice. */
+const firstIndexNotified = new Set<string>();
+
+const SOONG_BASES = ["out/soong/.intermediates", "out/.soong/.intermediates"];
+
+/** mtime of the soong build description: a rebuild rewrites it, so comparing
+ *  it against the cached value catches "jars changed since the scan". Trees
+ *  without build.ninja (make-era) return null and fall back to sampling. */
+async function buildStamp(root: string): Promise<number | null> {
+  try {
+    const st = await fs.stat(path.join(root, "out/soong/build.ninja"));
+    return st.mtimeMs;
+  } catch {
+    return null;
+  }
+}
 
 export function activate(ctx: vscode.ExtensionContext): void {
   channel = vscode.window.createOutputChannel("aosp-nav");
@@ -41,17 +64,46 @@ export function activate(ctx: vscode.ExtensionContext): void {
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void guardWorkspace(ctx, (m) => channel.appendLine(m));
+      // a folder that was removed/renamed leaves a dead branch in the Kotlin
+      // dispatch script; prune it (never touches a foreign script)
+      if (getConfig().kotlinEnabled) {
+        void pruneKotlinRootMap(ctx, (m) => channel.appendLine(m));
+      }
     })
   );
 
-  const runFor = async (root: string): Promise<void> => {
+  const drainQueue = (): void => {
+    while (activeScans < MAX_CONCURRENT_SCANS && scanQueue.length > 0) {
+      const job = scanQueue.shift()!;
+      activeScans++;
+      void scanRoot(job.root)
+        .catch((e) => channel.appendLine(`[aosp-nav] error: ${e}`))
+        .finally(() => {
+          activeScans--;
+          inflight.delete(job.root);
+          job.release();
+          drainQueue();
+        });
+    }
+  };
+
+  const runFor = (root: string): Promise<void> => {
+    const existing = inflight.get(root);
+    if (existing) return existing;
+    let release!: () => void;
+    const p = new Promise<void>((r) => { release = r; });
+    inflight.set(root, p);
+    scanQueue.push({ root, release });
+    drainQueue();
+    return p;
+  };
+
+  const scanRoot = async (root: string): Promise<void> => {
     const s = sessions.get(root) ?? { phase: "idle" as const, jars: [] };
     sessions.set(root, s);
     if (s.phase === "ready" || s.phase === "scanning") return;
-    if (running) return;
-    running = true;
     s.phase = "scanning";
-    status.statusScanning();
+    status.statusScanning(root);
 
     try {
       const cfg = getConfig();
@@ -60,40 +112,41 @@ export function activate(ctx: vscode.ExtensionContext): void {
       const fhash = filtersHash(ex);
 
       if (!(await ensureJavaExtension())) {
-        status.statusFailed();
+        status.statusFailed(root);
         s.phase = "failed";
         return;
       }
       await applyCompat(ctx, cfg.settingsScope, (m) => channel.appendLine(m));
       await applyHygiene(ctx, (m) => channel.appendLine(m));
 
-      // cache
+      // cache: a valid entry must match the rules AND the build stamp AND its
+      // jars must still exist (a rebuild deletes/replaces them). Any of the
+      // three failing falls through to a full rescan.
       const cacheFile = path.join(ctx.globalStorageUri.fsPath, `jars-${djb2(root)}.json`);
+      const stamp = await buildStamp(root);
       let jars: string[] | null = null;
       let fromCache = false;
       try {
         const raw = JSON.parse(await fs.readFile(cacheFile, "utf8")) as CacheFile;
-        if (isCacheValid(raw, CACHE_VERSION, fhash)) {
+        if (isCacheValid(raw, CACHE_VERSION, fhash, stamp) && !(await anyJarMissing(raw.jars))) {
           jars = raw.jars;
           fromCache = true;
         }
       } catch { /* miss */ }
 
       if (!jars) {
-        const baseOk = await isDirectory(path.join(root, "out/soong/.intermediates"))
-          || await isDirectory(path.join(root, "out/.soong/.intermediates"));
+        const baseOk = await isDirectory(path.join(root, SOONG_BASES[0]))
+          || await isDirectory(path.join(root, SOONG_BASES[1]));
         if (!baseOk) {
           // make-era or no build outputs
-          status.statusNoOut();
+          status.statusNoOut(root);
           s.phase = "failed";
-          running = false;
           return;
         }
         const scan = await scanSoong(root, defaultsJson, new FilterEngine(ex), scanJars);
         if (!scan) {
-          status.statusNoOut();
+          status.statusNoOut(root);
           s.phase = "failed";
-          running = false;
           return;
         }
         applyDirPriority(scan.jars, defaultsJson);
@@ -105,6 +158,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         await fs.writeFile(tmp, JSON.stringify({
           version: CACHE_VERSION, filtersHash: fhash,
           generatedAt: new Date().toISOString(), jars,
+          buildMtimeMs: stamp,
         } as CacheFile));
         await fs.rename(tmp, cacheFile);
       }
@@ -122,15 +176,17 @@ export function activate(ctx: vscode.ExtensionContext): void {
         // write failed (e.g. settings not writable): keep the session
         // retryable — the next file open tries again instead of dying
         // silently as in 0.1.1
-        status.statusFailed();
+        status.statusFailed(root);
         s.phase = "failed";
         channel.appendLine(`[aosp-nav] ${root}: referencedLibraries not applied, will retry on next open`);
         return;
       }
       if (res.changed) {
-        status.statusIndexing(jars.length);
-        if (!firstIndexNotified) {
-          firstIndexNotified = true;
+        // fresh write: show the one-time Eclipse index, but settle on its own
+        // (this branch used to stay on "indexing" forever)
+        status.statusIndexing(root, jars.length);
+        if (!firstIndexNotified.has(root)) {
+          firstIndexNotified.add(root);
           void vscode.window.showInformationMessage(
             vscode.l10n.t(
               "[aosp-nav] Injected {0} dependency jars. The first Eclipse indexing takes about 30-60 minutes (one-time); high CPU is normal, do not restart the language server during it. Later opens are instant.",
@@ -139,16 +195,14 @@ export function activate(ctx: vscode.ExtensionContext): void {
             vscode.l10n.t("Got it"));
         }
       } else {
-        status.statusReady(jars.length, fromCache, root);
+        status.statusReady(root, jars.length, fromCache);
       }
       s.phase = "ready";
       channel.appendLine(`[aosp-nav] ${root}: ${jars.length} jars (${fromCache ? "cache" : "scan"})`);
     } catch (e) {
-      status.statusFailed();
+      status.statusFailed(root);
       s.phase = "failed";
       channel.appendLine(`[aosp-nav] error: ${e}`);
-    } finally {
-      running = false;
     }
   };
 
@@ -181,7 +235,9 @@ export function activate(ctx: vscode.ExtensionContext): void {
           if (s) s.phase = "idle";
         }
         if (getConfig().enabled) {
-          void (async () => { for (const root of roots) await runFor(root); })();
+          // one runFor per root; the queue dedupes and orders them instead of
+          // a detached serial loop that could overlap a running scan
+          void Promise.all(roots.map((root) => runFor(root)));
         }
       }
     }),
@@ -239,6 +295,20 @@ export function activate(ctx: vscode.ExtensionContext): void {
         label: "state",
         detail: s ? `${s.phase}, jars=${s.jars.length}` : "no session",
       });
+      if (root) {
+        // cache freshness: the same stamp/validity the scan path relies on
+        const cacheFile = path.join(ctx.globalStorageUri.fsPath, `jars-${djb2(root)}.json`);
+        try {
+          const raw = JSON.parse(await fs.readFile(cacheFile, "utf8")) as CacheFile;
+          lines.push({
+            ok: null,
+            label: "cache",
+            detail: `v${raw.version}, ${raw.jars.length} jars, generated ${raw.generatedAt}, build ${raw.buildMtimeMs ?? "(none)"}`,
+          });
+        } catch {
+          lines.push({ ok: null, label: "cache", detail: "no cache (next open rescans)" });
+        }
+      }
       const jc = vscode.workspace.getConfiguration("java");
       const rl = jc.get<unknown>("project.referencedLibraries");
       const rlCount = Array.isArray(rl) ? rl.length : (rl as { include?: string[] })?.include?.length ?? 0;

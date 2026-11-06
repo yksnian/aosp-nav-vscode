@@ -3,6 +3,7 @@ import * as path from "path";
 import * as os from "os";
 import * as fs from "fs/promises";
 import { djb2 } from "../infra/hash";
+import { isDirectory } from "../infra/fsScan";
 
 /** Kotlin channel for fwcd/kotlin-language-server (vscode-kotlin extension).
  *
@@ -23,7 +24,7 @@ import { djb2 } from "../infra/hash";
  *  - the nvim plugin renders a DYNAMIC script marked `# aosp-nav.nvim classpath`;
  *  - this plugin renders the DISPATCH script marked `# aosp-nav managed`;
  *  - on takeover the nvim script is moved to classpath.nvim.bak and kept as the
- *    `*)` fallback branch of the dispatch script, so nvim-specific scenarios
+ *    fallback branch of the dispatch script, so nvim-specific scenarios
  *    (make-era trees, sibling checkouts, jar fallback dir) keep working;
  *  - aosp-nav.nvim recognizes our marker and does NOT rewrite the file, so the
  *    ping-pong ends and the dispatch script is the stable end state;
@@ -40,10 +41,15 @@ const NVIM_BACKUP_NAME = "classpath.nvim.bak";
 const SCRIPT_NAME = "classpath"; // no extension: first candidate fwcd checks
 const ROOT_MAP_KEY = "aosp-nav.kotlinRootMap"; // globalState: root -> {hash, matchPaths}
 const OWN_DIR = "aosp-nav"; // subdir for per-root jar lists
+/** Upper bound on remembered roots. Every remembered root adds one branch per
+ *  workspace folder to a script that is sourced by EVERY workspace; a tree that
+ *  was deleted or renamed would otherwise stay in the dispatch table forever. */
+const MAX_ROOTS = 32;
 
 interface RootEntry {
   hash: string;
   matchPaths: string[]; // root itself + workspace folders inside it (fwcd CWDs)
+  lastUsed?: number; // epoch ms of the last injection; used for the cap
 }
 
 export interface KotlinApplyResult {
@@ -110,6 +116,15 @@ function jarListPath(hash: string): string {
   return path.join(klsConfigDir(), OWN_DIR, `${hash}.txt`);
 }
 
+/** POSIX single-quote quoting: everything inside is literal (spaces, $, back-
+ *  ticks, glob chars), and an embedded `'` becomes `'\''`. The previous
+ *  `case "$PWD" in "…")` form silently broke on a path containing `"`, and
+ *  treated `*`/`?`/`[` in the path as a glob pattern — a miss printed nothing,
+ *  so fwcd fell back to its gradle scan without a single log line. */
+function shQuote(s: string): string {
+  return `'${s.split("'").join(`'\\''`)}'`;
+}
+
 function buildScript(map: Record<string, RootEntry>): string {
   const lines: string[] = [
     "#!/bin/sh",
@@ -117,18 +132,38 @@ function buildScript(map: Record<string, RootEntry>): string {
     "# Dispatches the fwcd kotlin-language-server classpath by workspace root.",
     "# Known roots cat their jar list; others fall through to the nvim family",
     "# script (make-era trees, sibling checkouts) or to fwcd's gradle/maven.",
-    'case "$PWD" in',
   ];
   for (const e of Object.values(map)) {
     const txt = jarListPath(e.hash);
     for (const mp of e.matchPaths) {
-      lines.push(`  "${mp}") cat "${txt}" ;;`);
+      lines.push(`if [ "$PWD" = ${shQuote(mp)} ]; then cat ${shQuote(txt)}; exit 0; fi`);
     }
   }
   const bak = nvimBackupPath();
-  lines.push(`  *) [ -x "${bak}" ] && exec "${bak}" ;;`);
-  lines.push("esac", "exit 0", "");
+  lines.push(`[ -x ${shQuote(bak)} ] && exec ${shQuote(bak)}`);
+  lines.push("exit 0", "");
   return lines.join("\n");
+}
+
+/** Rewrite the global dispatch script when its content changed.
+ *
+ *  `create` guards the foreign-script invariant: pruning/rescan paths may only
+ *  update a script that already carries our marker, otherwise they would hijack
+ *  a channel they never took over. */
+async function writeDispatchScript(
+  map: Record<string, RootEntry>,
+  create: boolean
+): Promise<boolean> {
+  const script = scriptPath();
+  const now = await readIfExists(script);
+  if (!create && !(now !== null && now.includes(SCRIPT_MARKER))) return false;
+  const next = buildScript(map);
+  if (now === next) return false;
+  const tmp = `${script}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, next);
+  await fs.rename(tmp, script);
+  await fs.chmod(script, 0o755).catch(() => { /* best effort */ });
+  return true;
 }
 
 /** Write the jar list + global dispatch script for one AOSP root. Never
@@ -174,7 +209,7 @@ export async function applyKotlinClasspath(
     }
 
     // family takeover: move the aosp-nav.nvim script aside (it becomes the
-    // `*)` fallback of our dispatch script, keeping its dynamic scenarios)
+    // fallback branch of our dispatch script, keeping its dynamic scenarios)
     if (isNvimFamily && !isOurs) {
       await fs.rename(script, nvimBackupPath());
       log(`[aosp-nav] kotlin: took over the aosp-nav.nvim classpath script (backup: ${NVIM_BACKUP_NAME})`);
@@ -185,8 +220,9 @@ export async function applyKotlinClasspath(
     const matchPaths = prev
       ? [...new Set([...prev.matchPaths, ...matchPathsFor(root)])]
       : matchPathsFor(root);
-    const entry: RootEntry = { hash: djb2(root), matchPaths };
+    const entry: RootEntry = { hash: djb2(root), matchPaths, lastUsed: Date.now() };
     map[root] = entry;
+    trimMap(map);
 
     // per-root jar list (tmp + rename: two windows may share one root)
     const txt = jarListPath(entry.hash);
@@ -200,17 +236,8 @@ export async function applyKotlinClasspath(
       txtChanged = true;
     }
 
-    // global dispatch script (re-read: family takeover renamed it away)
-    const now = await readIfExists(script);
-    const next = buildScript(map);
-    let scriptChanged = false;
-    if (now !== next) {
-      const tmp = `${script}.${process.pid}.tmp`;
-      await fs.writeFile(tmp, next);
-      await fs.rename(tmp, script);
-      scriptChanged = true;
-    }
-    await fs.chmod(script, 0o755).catch(() => { /* best effort */ });
+    // global dispatch script (re-read inside: family takeover renamed it away)
+    const scriptChanged = await writeDispatchScript(map, true);
 
     await ctx.globalState.update(ROOT_MAP_KEY, map);
     log(`[aosp-nav] kotlin: ${jars.length} jars${txtChanged ? ` written (${path.basename(txt)})` : ""}${scriptChanged ? ", script updated" : ""}`);
@@ -218,6 +245,70 @@ export async function applyKotlinClasspath(
   } catch (e) {
     log(`[aosp-nav] kotlin: failed to write classpath channel: ${e}`);
     return { changed: false, blocked: false, jars: 0 };
+  }
+}
+
+/** Keep the dispatch table bounded: drop the least recently injected roots. */
+function trimMap(map: Record<string, RootEntry>): void {
+  const entries = Object.entries(map);
+  if (entries.length <= MAX_ROOTS) return;
+  entries.sort((a, b) => (a[1].lastUsed ?? 0) - (b[1].lastUsed ?? 0));
+  for (const [root] of entries.slice(0, entries.length - MAX_ROOTS)) delete map[root];
+}
+
+/** Drop paths that no longer exist (deleted/renamed checkouts) from the
+ *  dispatch table and rewrite the script when it changed. Only touches a
+ *  script that already carries our marker, so a foreign/family script is never
+ *  hijacked by a prune. Called when workspace folders change. */
+export async function pruneKotlinRootMap(
+  ctx: vscode.ExtensionContext,
+  log: (msg: string) => void = () => {}
+): Promise<void> {
+  try {
+    const map = ctx.globalState.get<Record<string, RootEntry>>(ROOT_MAP_KEY);
+    if (!map) return;
+    let changed = false;
+    for (const [root, e] of Object.entries(map)) {
+      if (!(await isDirectory(root))) {
+        delete map[root];
+        changed = true;
+        continue;
+      }
+      const alive: string[] = [];
+      for (const p of e.matchPaths) {
+        // a workspace folder outside the root can only be stale metadata
+        if (p !== root && !p.startsWith(root + path.sep)) {
+          changed = true;
+          continue;
+        }
+        if (await isDirectory(p)) alive.push(p);
+        else changed = true;
+      }
+      if (!alive.includes(root)) alive.unshift(root);
+      if (alive.length !== e.matchPaths.length) {
+        e.matchPaths = alive;
+        changed = true;
+      }
+    }
+    trimMap(map);
+    // orphaned jar lists: without this, diagnostics keeps reporting "N jars"
+    // for a tree that is no longer reachable from the dispatch script
+    const dir = path.join(klsConfigDir(), OWN_DIR);
+    const keep = new Set(Object.values(map).map((e) => `${e.hash}.txt`));
+    try {
+      for (const f of await fs.readdir(dir)) {
+        if (!keep.has(f)) {
+          await fs.rm(path.join(dir, f), { force: true });
+          changed = true;
+        }
+      }
+    } catch { /* dir missing: nothing to prune */ }
+    if (!changed) return;
+    await ctx.globalState.update(ROOT_MAP_KEY, map);
+    const wrote = await writeDispatchScript(map, false);
+    log(`[aosp-nav] kotlin: pruned stale roots${wrote ? ", script updated" : ""}`);
+  } catch (e) {
+    log(`[aosp-nav] kotlin: prune failed: ${e}`);
   }
 }
 
