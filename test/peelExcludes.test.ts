@@ -50,7 +50,6 @@ describe("peelAppended: array keys (java.import.exclusions)", () => {
         "**/.metadata/**",
         "**/archetype-resources/**",
         "**/META-INF/maven/**",
-        "**/lenovo/**",
         "**/packages/apps/**",
         "**/out/**",
         "**/.repo/**",
@@ -63,7 +62,6 @@ describe("peelAppended: array keys (java.import.exclusions)", () => {
       "**/.metadata/**",
       "**/archetype-resources/**",
       "**/META-INF/maven/**",
-      "**/lenovo/**",
       "**/packages/apps/**",
     ]);
   });

@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
-import * as path from "path";
 import { detectAospRoot } from "../androidRoot";
 import { GuardReport, patternsFor, scanBlockers } from "./eclipseGuardScan";
 import { countBlockers, decideGuardOutcome } from "./guardState";
+import { ScanCancelledError, DEFAULT_WALK_CONCURRENCY } from "../infra/fsScan";
 import * as status from "../status";
 
 /** vscode glue for the eclipse guard: merges blocker exclusion patterns into
@@ -24,6 +24,25 @@ const OWN_EXCL_KEY = "aosp-nav.ownExclusions";
  *  asked). Consecutive sessions keep seeing the same dirs on disk, so this
  *  record is what stops them from asking again. */
 const HANDLED_KEY = "aosp-nav.eclipseCleanHandled";
+/** Last scan result per workspace folder. The walk is the expensive part of
+ *  activation (12 s serial on a real AOSP tree; ~4 s with the shared
+ *  concurrency-8 walker), while the dirs it looks for are leftovers from old
+ *  buildship sessions and do not churn. 24 h is therefore enough; folder
+ *  changes and manual rescans force a fresh scan. */
+const CACHE_KEY = "aosp-nav.eclipseGuardCache";
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface CachedGuard {
+  at: number;
+  blockers: string[];
+  rootBlocked: boolean;
+}
+type GuardCache = Record<string, CachedGuard>;
+
+export interface GuardOptions {
+  /** ignore the cache and rescan every AOSP workspace folder */
+  force?: boolean;
+}
 
 let lastReports: GuardReport[] = [];
 let notifiedThisSession = false;
@@ -118,23 +137,68 @@ async function clearPending(ctx: vscode.ExtensionContext): Promise<void> {
  *  Safe to run repeatedly; only notifies once per session. */
 export async function guardWorkspace(
   ctx: vscode.ExtensionContext,
-  log: (m: string) => void
+  log: (m: string) => void,
+  opts: GuardOptions = {}
 ): Promise<void> {
   const wasPending = await isCleanPending(ctx);
   const handled = new Set(ctx.workspaceState.get<string[]>(HANDLED_KEY) ?? []);
 
-  const reports: GuardReport[] = [];
+  // collect the AOSP folders first; only those are walked
+  const folders: string[] = [];
+  for (const f of vscode.workspace.workspaceFolders ?? []) {
+    if (f.uri.scheme !== "file") continue;
+    const aosp = await detectAospRoot(f.uri.fsPath);
+    if (!aosp) continue; // not an AOSP workspace folder: stay silent
+    folders.push(f.uri.fsPath);
+  }
+
+  const cache = ctx.workspaceState.get<GuardCache>(CACHE_KEY) ?? {};
+  const isFresh = (folder: string): boolean => {
+    const c = cache[folder];
+    return !!c && Date.now() - c.at < CACHE_TTL_MS;
+  };
+  const toScan = folders.filter((folder) => opts.force || !isFresh(folder));
+
+  if (toScan.length > 0) {
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: vscode.l10n.t("AOSP: checking Eclipse metadata"),
+          cancellable: true,
+        },
+        async (progress, token) => {
+          for (const folder of toScan) {
+            const report = await scanBlockers(folder, {
+              concurrency: DEFAULT_WALK_CONCURRENCY,
+              shouldCancel: () => token.isCancellationRequested,
+              onDirs: (d) =>
+                progress.report({ message: `${vscode.workspace.asRelativePath(folder, false)}: ${d}` }),
+            });
+            cache[folder] = { at: Date.now(), blockers: report.blockers, rootBlocked: report.rootBlocked };
+          }
+        }
+      );
+    } catch (e) {
+      if (e instanceof ScanCancelledError) {
+        log("[aosp-nav] eclipse guard: scan cancelled, will retry on next activation");
+        return;
+      }
+      throw e;
+    }
+    await ctx.workspaceState.update(CACHE_KEY, cache);
+  }
+
+  const reports: GuardReport[] = folders.map((folder) => {
+    const c = cache[folder];
+    return { folder, blockers: c?.blockers ?? [], rootBlocked: c?.rootBlocked ?? false };
+  });
   const patternsNow: string[] = [];
   let addedTotal = 0;
   let uncovered = 0;
   let writeFailed = false;
 
-  for (const f of vscode.workspace.workspaceFolders ?? []) {
-    if (f.uri.scheme !== "file") continue;
-    const aosp = await detectAospRoot(f.uri.fsPath);
-    if (!aosp) continue; // not an AOSP workspace folder: stay silent
-    const report = await scanBlockers(path.resolve(f.uri.fsPath));
-    reports.push(report);
+  for (const report of reports) {
     const patterns = patternsFor(report);
     if (patterns.length === 0) continue;
     patternsNow.push(...patterns);
@@ -144,7 +208,7 @@ export async function guardWorkspace(
     addedTotal += res.added;
     writeFailed = writeFailed || res.failed;
     if (res.added > 0) {
-      log(`[aosp-nav] eclipse guard: excluded ${res.added} metadata dir(s) under ${f.uri.fsPath}`);
+      log(`[aosp-nav] eclipse guard: excluded ${res.added} metadata dir(s) under ${report.folder}`);
     }
   }
   lastReports = reports;
@@ -218,6 +282,7 @@ export async function clearOwnExclusions(ctx: vscode.ExtensionContext): Promise<
     }
   }
   await ctx.workspaceState.update(OWN_EXCL_KEY, undefined);
+  await ctx.workspaceState.update(CACHE_KEY, undefined);
   await clearPending(ctx);
   await ctx.workspaceState.update(HANDLED_KEY, undefined);
   blockedCount = 0;

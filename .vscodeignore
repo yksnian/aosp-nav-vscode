@@ -2,7 +2,12 @@ src/**
 test/**
 node_modules/**
 .vscode/**
+.github/**
+docs/**
+esbuild.mjs
+ci.sh
 **/*.map
 **/*.ts
 tsconfig.json
-docs/**
+package-lock.json
+*.vsix

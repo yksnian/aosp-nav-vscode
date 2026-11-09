@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.7-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.9-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Instant source navigation for Android (AOSP) in VSCode — go-to-definition, completion and reference resolution across **all** Java and Kotlin modules (frameworks/base, packages/modules/*, system_server services, ...), with zero manual project setup.
 
@@ -15,14 +15,15 @@ aosp-nav bridges that gap automatically:
 1. **Detect** — open any `.java` file in an AOSP checkout; the plugin walks up from the file path to find the AOSP root (before that, it is fully silent).
 2. **Select** — scan `out/soong/.intermediates` and pick exactly one set of artifacts per module, excluding the whole API-stub zoo and ordering real implementations before anything suspicious.
 3. **Inject** — write the ordered jar list to `java.project.referencedLibraries`, apply AOSP compatibility switches (disable Gradle/Maven importers, exclude `out/`/`.repo/` from import), and keep the file watcher/search away from the huge `out/` tree (`files.watcherExclude`, `search.exclude`). The write is automatic (no confirmation) and retried on the next file open if it fails.
-4. **Guard** — the eclipse guard scans the workspace for leftover `.project`+`.classpath` directories (old jdtls/buildship sessions) and excludes them from import detection, so jdt.ls keeps creating its invisible project and `referencedLibraries` actually applies (see FAQ).
+4. **Guard** — the eclipse guard scans the whole workspace for leftover `.project` markers (old jdtls/buildship sessions) and excludes every such directory from import detection, so jdt.ls keeps creating its invisible project and `referencedLibraries` actually applies (see FAQ).
 5. **Cache** — persist the list, auto-invalidated by algorithm version or exclusion-config fingerprint. Configuration changes just work.
 
 ## Requirements
 
-- VSCode >= 1.85
+- VSCode >= 1.95
 - [Language Support for Java](https://marketplace.visualstudio.com/items?itemName=redhat.java) (`redhat.java`) — installed automatically via `extensionDependencies`
 - Optional, Kotlin navigation: [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`) — see [Kotlin support](#kotlin-support-experimental)
+- Optional, C/C++ navigation: [clangd](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd) (`llvm-vs-code-extensions.vscode-clangd`). The extension bundles no clangd binary; point `clangd.path` at the AOSP prebuilt (`prebuilts/clang/host/linux-x86/clang-*/bin/clangd`), or accept the one-time suggestion from aosp-nav
 - A **compiled** AOSP tree (`out/soong/.intermediates` present)
 
 Recommended for large trees — raise the language server heap (user settings):
@@ -41,6 +42,16 @@ Recommended for large trees — raise the language server heap (user settings):
 Works with the AOSP root or any sub-checkout (e.g. `frameworks/base`) as the workspace — detection is per opened file, not per folder. If the guard finds leftover Eclipse metadata dirs on first use (typical when opening the AOSP root on a machine that previously ran the nvim plugin or buildship), it offers a one-time "clean and reload" (`java.clean.workspace`): the clean rebuilds the language-server workspace, after which the first Eclipse index takes ~30–60 minutes — one-time cost.
 
 Messages follow the VS Code display language: Chinese for zh-cn, English everywhere else.
+
+## Install & verify (user checklist)
+
+1. Install `redhat.java` (declared dependency). For C/C++ install `llvm-vs-code-extensions.vscode-clangd` separately — the clangd extension bundles no server.
+2. Install the VSIX in the same environment as the AOSP checkout. In Remote-WSL, run `code --install-extension aosp-nav-0.1.9.vsix` from the WSL terminal, then reload the window.
+3. Open the AOSP checkout as a workspace folder. Multi-root windows work, but all C/C++ files in one window share a single `clangd.arguments`.
+4. **Java**: open any `.java` file and wait for `$(check) AOSP:<n>`. The first `sourcePaths` injection asks for a window reload — accept it, otherwise jdt.ls keeps using jar navigation for this session. Changing `aosp-nav.java.sourceRoots` requires the same reload.
+5. **C/C++**: set `clangd.path` to `<root>/prebuilts/clang/host/linux-x86/clang-r*/bin/clangd` (or accept the first-open suggestion). Open a `.cpp`; the first file may start with old arguments and then restart clangd once after the 800 ms debounce. Later files reuse the server. Verify with F12 on a symbol referenced by an `#include` in a C/C++ file — it should resolve to the corresponding header in the source tree. `AOSP: Show Diagnostics` should report `cpp origin` as `compdb` or `cc_deps`.
+6. **Generated headers (AIDL/protobuf outputs, etc.)**: `cc_deps` intentionally carries no `out/soong/.intermediates` paths. Generate the official database with `make SOONG_GEN_COMPDB=1 nothing` (or `m SOONG_GEN_COMPDB=1 nothing`) in the same tree, then reload the window once so the plugin switches to the compdb tier.
+7. **Reload Window is needed only for**: the first `sourcePaths` injection, changes to `aosp-nav.java.sourceRoots`, and switching to a compdb generated after the session started. Incremental C/C++ entry writes and ordinary `clangd.arguments` updates do not require it.
 
 ## Commands
 
@@ -65,8 +76,47 @@ Exclusion lists use **append** semantics by default: your entries are added afte
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = user lists added after defaults; `replace` = defaults discarded |
 | `aosp-nav.settingsScope` | `"workspace"` | Where `referencedLibraries` and the Gradle/Maven importer switches are written: `workspace` (`.vscode/settings.json` inside the repo, no impact on other Java projects) or `global` (user settings, shared across windows, but absolute jar paths pollute non-AOSP Java projects). Since 0.1.2 the write needs no confirmation; switching scope auto-clears our previous list from the other layer. A switch you set back to `true` yourself is always left alone |
 | `aosp-nav.kotlin.enabled` | `false` | Experimental: feed the same jar list to the fwcd kotlin-language-server via its global classpath script (see [Kotlin support](#kotlin-support-experimental)) |
+| `aosp-nav.java.sourceRoots` | `["frameworks/base/core/java"]` | Directories (relative to the AOSP root, or absolute) written to the workspace layer of `java.project.sourcePaths`, so go-to-definition lands in real `.java` sources instead of decompiled jars. An empty array disables the injection. Takes effect after a window reload |
+| `aosp-nav.cpp.enabled` | `true` | C/C++ navigation via clangd (see [C/C++ navigation](#cc-navigation-clangd)) |
+| `aosp-nav.cpp.restartDebounceMs` | `800` | Debounce before restarting clangd after `clangd.arguments` actually changed; later CDB entry writes reload without restart |
+| `aosp-nav.cpp.suggestClangdPath` | `true` | Offer the AOSP prebuilt clangd for `clangd.path` (only written after an explicit click) |
+| `aosp-nav.cpp.curatedIncludes` | see below | Include dirs (root-relative, missing ones skipped) used only by the Android.bp fallback tier |
+| `aosp-nav.cpp.headerLibDepth` | `3` | Max depth when resolving `header_libs` inside the same Android.bp (fallback tier only) |
 
 Notes on multi-repo windows: with the `global` scope, opening files from different sub-checkouts in one window injects the **union** of jars (they heavily overlap anyway). With the default `workspace` scope the list is written per repo — open each sub-checkout in its own window for strictly per-repo classpaths.
+
+### Java source navigation (`java.project.sourcePaths`)
+
+By default cross-module go-to-definition lands in the decompiled `jdt://` view of the injected jar. The plugin therefore writes `java.project.sourcePaths` (workspace layer only — paths are written relative to the workspace folder, and absolute AOSP paths never reach your user settings) with the roots from `aosp-nav.java.sourceRoots`, defaulting to `frameworks/base/core/java`. On a real tree, cross-module references to types under the default source roots land in the real `.java` file instead of the decompiled view.
+
+Two deliberate limits:
+
+- **The list is partial by design.** Injecting `sourcePaths` switches off jdt.ls' per-file source inference, so modules *not* listed lose *source* navigation; jar navigation still works. Add the roots you actually work in to `aosp-nav.java.sourceRoots`. Writing the whole tree is not viable (210k packaged `.java` files / 8.4k source-root union on a real checkout).
+- **A window reload is required.** jdt.ls reads `sourcePaths` during import; a runtime write has no effect on the running session. When the list changes, the plugin shows a one-time "Reload Window" prompt (button included). The plugin never calls `java.project.getAll` / `getClasspaths` to probe the result — on a real AOSP tree those block for minutes.
+
+## C/C++ navigation (clangd)
+
+Opening a C/C++ file under the detected AOSP root feeds clangd real compile flags instead of falling back to a generic host configuration. The plugin uses three tiers, in order:
+
+1. **compdb** — if `out/soong/development/ide/compdb/compile_commands.json` exists (generate it with `make SOONG_GEN_COMPDB=1 nothing`), clangd is pointed at that directory. Nothing is copied or re-written.
+2. **cc_deps** — if `out/soong/module_bp_cc_deps.json` exists (normal builds write it), the module section for the opened file is read line-by-line (the file has ~14k modules / ~147k srcs; parsing all of it on every open is avoided). Header search dirs become `-I`, system dirs `-isystem`, flags are copied, dead paths are pruned, and `--target` is derived from the bionic `uapi/asm-*` dir. One CDB entry is upserted into a plugin-managed `compile_commands.json` under the extension's global storage.
+3. **Android.bp** — last resort when neither build artifact exists. Nearest `Android.bp`, same-file `header_libs`, plus `aosp-nav.cpp.curatedIncludes`.
+
+**Why the server restart is rare.** clangd reads `clangd.arguments` only at process start, but it reloads its compilation database when a tracked document changes. Therefore:
+
+- new/updated entries for a newly opened file are written incrementally and picked up without a restart;
+- `clangd.restart` is scheduled only when the effective argument list really changed (e.g. the compdb appeared, or the managed CDB moved), debounced by `aosp-nav.cpp.restartDebounceMs` (default 800 ms);
+- reopening the same file, or writing an identical entry, never restarts clangd.
+
+User-visible impact: the very first C/C++ file of a session may start clangd with the previous arguments for a fraction of a second, then one debounced restart occurs (brief “clangd restarting” / preamble re-parse, completions settle again). After that, opening more files does not restart the server.
+
+The plugin never overrides your own `--compile-commands-dir`: if any layer already sets it, that value wins. On a real tree, a symbol from a `libbase` header resolves through the cc_deps tier (112 flags, target `aarch64-linux-android`) to the corresponding header in the source tree.
+
+Limitations:
+
+- **Generated headers are not in cc_deps.** AIDL/protobuf outputs live under `out/soong/.intermediates`, which `module_bp_cc_deps.json` does not list. Files including headers generated by AIDL/protobuf keep that error until those headers are generated / the official compdb is generated. The plugin does not fabricate include paths to hide it.
+- **Header files and bp fallback are best-effort.** A header is usually not in a module's `srcs`, and the fallback cannot resolve `header_libs`/`cc_defaults` that live in a parent `Android.bp` (nvim builds a whole-tree index for that; VS Code does not). `cc_deps` remains the reliable tier.
+- **One `clangd.arguments` per window.** In a multi-root window the flag follows the last opened AOSP root; open each checkout in its own window.
 
 ## Jar selection rules
 
@@ -99,11 +149,11 @@ If the status bar shows `$(warning) AOSP:<n> stale` / diagnostics reports eclips
 
 ### Status bar says "N stale" / opening the AOSP root has no navigation at all (eclipse guard)
 
-jdt.ls applies `java.project.referencedLibraries` **only to the invisible project**; any sub-directory containing both `.project` and `.classpath` is imported as a real Eclipse project instead, which suppresses the invisible project entirely — the injected jars never apply, opened files fall into the jar-less default project, and navigation is dead. These dirs are usually metadata left behind by earlier nvim-jdtls/buildship sessions (e.g. `external/<lib>/`, or sub-checkouts once opened with older tooling); before 0.1.2, opening the AOSP root always hit this.
+jdt.ls applies `java.project.referencedLibraries` **only to the invisible project**; any directory containing a `.project` file (with or without `.classpath`) is imported as a real Eclipse project instead, and a single imported project suppresses the invisible project entirely — the injected jars never apply, opened files fall into the jar-less default project, and navigation is dead. These markers are usually left behind by earlier nvim-jdtls/buildship sessions (e.g. `external/<lib>/`, or sub-checkouts once opened with older tooling); before 0.1.2, opening the AOSP root always hit this.
+
+A `.project` alone is enough to block the root invisible project, so the criterion is `.project` presence only — no `.classpath` requirement and no depth cap (a real AOSP tree has 159 such dirs, 4 of them deeper than level 5). Excluding only part of them leaves the root without an invisible project.
 
 Handling (automatic): the guard writes each such dir into the workspace layer of `java.import.exclusions` (exact absolute-path match, no effect on other projects) and offers a one-time "clean and reload" — already-imported projects persist inside the language-server workspace, so `java.clean.workspace` must rebuild it for the exclusions to take effect. After the clean, the first Eclipse index takes ~30–60 minutes; never needed again. You can also trigger it manually via `AOSP: Fix Eclipse Metadata Blockers`.
-
-Note: dirs with only `.project` and no `.classpath` (e.g. the nvim plugin's `packages/modules/Connectivity/.project`) are harmless and left alone.
 
 ### Java reports "Syntax Server ... -32097" or "An error has occurred ... config_ss_linux"
 
@@ -123,7 +173,7 @@ The default heap is too small for 1000+ jars. Add `"java.jdt.ls.vmargs": "-Xmx8G
 
 ### Stuck at "Importing Gradle project(s)" / "Validating Gradle wrapper checksum"
 
-A few `build.gradle` files are scattered in the AOSP tree (e.g. `frameworks/base/tests/UiBench`). The plugin disables both importers automatically, in the layer `aosp-nav.settingsScope` selects (the repo's `.vscode/settings.json` by default, so your other Java projects keep their Gradle support). If you need to set them yourself — or run an older version — add:
+A few `build.gradle` files are scattered in the AOSP tree (mostly in test directories). The plugin disables both importers automatically, in the layer `aosp-nav.settingsScope` selects (the repo's `.vscode/settings.json` by default, so your other Java projects keep their Gradle support). If you need to set them yourself — or run an older version — add:
 
 ```jsonc
 "java.import.gradle.enabled": false,

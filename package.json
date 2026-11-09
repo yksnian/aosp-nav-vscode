@@ -3,14 +3,13 @@
   "displayName": "Android Source Navigation",
   "description": "go-to-definition and completion across all android java modules",
   "publisher": "yksnian",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/yksnian/aosp-nav-vscode" },
   "icon": "icon.png",
-  "engines": { "vscode": "^1.85.0" },
+  "engines": { "vscode": "^1.95.0" },
   "categories": ["Programming Languages", "Other"],
-  "activationEvents": ["onLanguage:java", "onLanguage:kotlin"],
-  "extensionDependencies": ["redhat.java"],
+  "activationEvents": ["onLanguage:java", "onLanguage:kotlin", "onLanguage:c", "onLanguage:cpp"],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -66,20 +65,72 @@
           "type": "boolean",
           "default": false,
           "description": "Kotlin support (experimental)"
+        },
+        "aosp-nav.java.sourceRoots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["frameworks/base/core/java"],
+          "description": "Directories (relative to the AOSP root, or absolute) written to the workspace layer of java.project.sourcePaths, so go-to-definition lands in real .java sources instead of the decompiled jars. Keep the list focused: injecting sourcePaths disables jdt.ls per-file source inference, so modules outside the list keep jar navigation only. An empty array disables the injection. Takes effect after a window reload."
+        },
+        "aosp-nav.cpp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "C/C++ navigation via clangd: point clangd at the soong compdb when it exists, otherwise extract compile flags per opened file from module_bp_cc_deps.json (Android.bp as last resort) and write a managed compile_commands.json. Requires the llvm-vs-code-extensions.vscode-clangd extension."
+        },
+        "aosp-nav.cpp.restartDebounceMs": {
+          "type": "number",
+          "default": 800,
+          "minimum": 0,
+          "description": "Debounce before restarting clangd after clangd.arguments actually changed. Entries added later are reloaded by clangd without a restart, so this only applies to argument changes."
+        },
+        "aosp-nav.cpp.suggestClangdPath": {
+          "type": "boolean",
+          "default": true,
+          "description": "Offer to set clangd.path to the AOSP prebuilt clangd (prebuilts/clang/host/linux-x86/clang-*/bin/clangd). The extension bundles no binary; the setting is only written after an explicit click."
+        },
+        "aosp-nav.cpp.curatedIncludes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "bionic/libc/include",
+            "bionic/libm/include",
+            "system/core/include",
+            "system/libbase/include",
+            "system/logging/liblog/include",
+            "system/unwinding/libunwindstack/include",
+            "frameworks/native/include",
+            "frameworks/av/include",
+            "frameworks/base/include",
+            "system/media/audio/include",
+            "hardware/libhardware/include",
+            "external/libcxx/include"
+          ],
+          "description": "Include directories (relative to the AOSP root, skipped when missing) added only by the Android.bp fallback tier, which cannot resolve every header_libs edge."
+        },
+        "aosp-nav.cpp.headerLibDepth": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "description": "Maximum depth when resolving header_libs inside the same Android.bp (fallback tier only; tree-wide header_libs lookup is not implemented)."
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run typecheck && node esbuild.mjs",
+    "package": "npm run typecheck && node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p ./ --noEmit",
-    "watch": "tsc -watch -p ./",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package:vsix": "vsce package --no-dependencies",
+    "ci": "bash ci.sh"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/vscode": "^1.85.0",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.21.5",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
   }

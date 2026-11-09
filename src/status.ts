@@ -185,6 +185,16 @@ export function statusFailed(root?: string): void {
   item.show();
 }
 
+/** User cancelled the progress notification: the scan wrote no cache and the
+ *  session stays retryable, so say so instead of leaving a permanent spinner. */
+export function statusCancelled(root?: string): void {
+  if (root) currentRoot = root;
+  item.text = "$(circle-slash) AOSP: cancelled";
+  item.tooltip = vscode.l10n.t("Scan cancelled. Open a Java/Kotlin file to scan again.");
+  mode = "transient";
+  item.show();
+}
+
 export function statusHide(): void {
   for (const root of [...settleTimers.keys()]) clearSettle(root);
   mode = "transient";

@@ -10,7 +10,36 @@ export interface AospConfig {
   settingsScope: "global" | "workspace";
   exclude: ExclusionConfig;
   kotlinEnabled: boolean;
+  javaSourceRoots: string[];
+  cpp: CppConfig;
 }
+
+export interface CppConfig {
+  enabled: boolean;
+  /** Delay before a changed `clangd.arguments` triggers `clangd.restart`. */
+  restartDebounceMs: number;
+  /** Offer the AOSP prebuilt clangd via `clangd.path` (never writes it
+   *  without an explicit click). */
+  suggestClangdPath: boolean;
+  /** Android.bp fallback baseline. */
+  curatedIncludes: string[];
+  headerLibDepth: number;
+}
+
+export const DEFAULT_CURATED_INCLUDES = [
+  "bionic/libc/include",
+  "bionic/libm/include",
+  "system/core/include",
+  "system/libbase/include",
+  "system/logging/liblog/include",
+  "system/unwinding/libunwindstack/include",
+  "frameworks/native/include",
+  "frameworks/av/include",
+  "frameworks/base/include",
+  "system/media/audio/include",
+  "hardware/libhardware/include",
+  "external/libcxx/include",
+];
 
 let cachedDefaults: Defaults | null = null;
 
@@ -35,14 +64,16 @@ export function getConfig(): AospConfig {
       globs: c.get<string[]>("excludeGlobs") ?? [],
     },
     kotlinEnabled: c.get<boolean>("kotlin.enabled") ?? false,
+    javaSourceRoots: c.get<string[]>("java.sourceRoots") ?? ["frameworks/base/core/java"],
+    cpp: {
+      enabled: c.get<boolean>("cpp.enabled") ?? true,
+      restartDebounceMs: c.get<number>("cpp.restartDebounceMs") ?? 800,
+      suggestClangdPath: c.get<boolean>("cpp.suggestClangdPath") ?? true,
+      curatedIncludes: c.get<string[]>("cpp.curatedIncludes") ?? DEFAULT_CURATED_INCLUDES,
+      headerLibDepth: c.get<number>("cpp.headerLibDepth") ?? 3,
+    },
   };
 }
-
-const FALLBACK_DEFAULTS: ExclusionConfig = {
-  jars: ["stubs", "-stub", "^jrt-fs\\.jar$", "-headers"],
-  paths: ["linux_glibc_common", "development/"],
-  globs: ["^prebuilts/sdk/sdk_"],
-};
 
 /** Merge semantics: append = defaults + user (dedup; a user entry shadowing a
  *  default keeps the default out), replace = user only. */
@@ -68,6 +99,3 @@ export function effectiveExclusions(cfg: AospConfig, defaults: Defaults): Exclus
     globs: merged(d.globs, cfg.exclude.globs),
   };
 }
-
-// keep FALLBACK_DEFAULTS referenced for emergency use (defaults.json unreadable)
-export function fallbackExclusions(): ExclusionConfig { return FALLBACK_DEFAULTS; }

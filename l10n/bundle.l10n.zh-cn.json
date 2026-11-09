@@ -19,5 +19,10 @@
   "AOSP root detected but no build outputs found. Build the tree first.": "已检测到 AOSP 根, 但没有构建产物。请先编译整个树。",
   "AOSP: scan failed. Run 'AOSP: Show Diagnostics' for details.": "AOSP: 扫描失败。运行 'AOSP: Show Diagnostics' 查看详情。",
   "[aosp-nav] A user-managed kotlin-language-server classpath script already exists; aosp-nav will not take over the Kotlin classpath channel.": "[aosp-nav] 已存在用户自管的 kotlin-language-server classpath 脚本, aosp-nav 不会接管 Kotlin classpath 通道。",
-  "[aosp-nav] Kotlin extension (fwcd.kotlin, vscode-kotlin) is not installed; Kotlin navigation is unavailable until it is installed. The classpath script is already in place.": "[aosp-nav] Kotlin 扩展 (fwcd.kotlin, vscode-kotlin) 未安装, 安装前无法提供 Kotlin 跳转。classpath 脚本已就位, 安装后即生效。"
+  "[aosp-nav] Kotlin extension (fwcd.kotlin, vscode-kotlin) is not installed; Kotlin navigation is unavailable until it is installed. The classpath script is already in place.": "[aosp-nav] Kotlin 扩展 (fwcd.kotlin, vscode-kotlin) 未安装, 安装前无法提供 Kotlin 跳转。classpath 脚本已就位, 安装后即生效。",
+  "AOSP: scanning build outputs": "AOSP: 正在扫描构建产物",
+  "reading {0}": "读取 {0}",
+  "{0} directories": "已扫描 {0} 个目录",
+  "AOSP: checking Eclipse metadata": "AOSP: 正在检查 Eclipse 元数据",
+  "Scan cancelled. Open a Java/Kotlin file to scan again.": "扫描已取消。打开 Java/Kotlin 文件即可重新扫描。"
 }

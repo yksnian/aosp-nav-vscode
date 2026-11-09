@@ -16,7 +16,7 @@ import type { GuardReport } from "./eclipseGuardScan";
 
 export type GuardOutcome = "clean" | "converged" | "oweClean";
 
-/** Stale .project/.classpath dirs currently on disk. */
+/** Stale .project dirs currently on disk. */
 export function countBlockers(reports: GuardReport[]): number {
   return reports.reduce((n, r) => n + r.blockers.length + (r.rootBlocked ? 1 : 0), 0);
 }

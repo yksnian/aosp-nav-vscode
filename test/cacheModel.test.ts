@@ -1,46 +1,48 @@
 import { describe, it, expect } from "vitest";
 import { CACHE_VERSION, CacheFile, isCacheValid, filtersHash } from "../src/core/cacheModel";
-import { ExclusionConfig } from "../src/core/types";
 
-const ex: ExclusionConfig = { jars: ["stub"], paths: ["tracing"], globs: [] };
-const fhash = filtersHash(ex);
+const filters = { jars: ["a"], paths: ["b"], globs: ["c"] };
+const hash = filtersHash(filters);
 
 function cache(over: Partial<CacheFile> = {}): CacheFile {
   return {
     version: CACHE_VERSION,
-    filtersHash: fhash,
+    filtersHash: hash,
     generatedAt: "2026-01-01T00:00:00.000Z",
-    jars: ["/out/a.jar", "/out/b.jar"],
+    jars: ["/out/x.jar"],
     buildMtimeMs: 1000,
     ...over,
   };
 }
 
-describe("isCacheValid", () => {
-  it("accepts a cache whose build stamp matches", () => {
-    expect(isCacheValid(cache(), CACHE_VERSION, fhash, 1000)).toBe(true);
+describe("cache freshness", () => {
+  it("accepts a matching cache", () => {
+    expect(isCacheValid(cache(), CACHE_VERSION, hash, 1000)).toBe(true);
   });
 
-  it("rejects a cache produced by a different build (rebuild invalidates)", () => {
-    expect(isCacheValid(cache(), CACHE_VERSION, fhash, 2000)).toBe(false);
-  });
-
-  it("accepts when the current stamp is unknown (no build.ninja)", () => {
-    expect(isCacheValid(cache(), CACHE_VERSION, fhash, null)).toBe(true);
-  });
-
-  it("rejects a 7-era cache without a build stamp, forcing one rescan", () => {
-    const legacy = cache({ buildMtimeMs: undefined });
-    expect(isCacheValid(legacy, CACHE_VERSION, fhash, 1000)).toBe(false);
-  });
-
-  it("rejects when filters changed", () => {
+  it("rejects version, filter hash, and empty lists", () => {
+    expect(isCacheValid(cache({ version: CACHE_VERSION - 1 }), CACHE_VERSION, hash, 1000)).toBe(false);
     expect(isCacheValid(cache(), CACHE_VERSION, "other", 1000)).toBe(false);
+    expect(isCacheValid(cache({ jars: [] }), CACHE_VERSION, hash, 1000)).toBe(false);
   });
 
-  it("rejects empty jar lists and version mismatches", () => {
-    expect(isCacheValid(cache({ jars: [] }), CACHE_VERSION, fhash, 1000)).toBe(false);
-    expect(isCacheValid(cache(), CACHE_VERSION + 1, fhash, 1000)).toBe(false);
-    expect(isCacheValid(null, CACHE_VERSION, fhash, 1000)).toBe(false);
+  it("rejects caches without a build stamp (upgrade path)", () => {
+    const old = cache();
+    delete old.buildMtimeMs;
+    expect(isCacheValid(old, CACHE_VERSION, hash, 1000)).toBe(false);
+  });
+
+  it("rejects a rebuild but accepts an unknown current stamp", () => {
+    expect(isCacheValid(cache(), CACHE_VERSION, hash, 2000)).toBe(false);
+    expect(isCacheValid(cache(), CACHE_VERSION, hash, null)).toBe(true);
+  });
+
+  it("rejects a cached stamp when the tree previously had no build.ninja", () => {
+    expect(isCacheValid(cache({ buildMtimeMs: null }), CACHE_VERSION, hash, 1000)).toBe(false);
+  });
+
+  it("fingerprints are stable per exclusion set and change with it", () => {
+    expect(filtersHash(filters)).toBe(hash);
+    expect(filtersHash({ ...filters, jars: ["a", "z"] })).not.toBe(hash);
   });
 });

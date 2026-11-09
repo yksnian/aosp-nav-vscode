@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.7-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.9-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java/Kotlin 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
 
@@ -15,14 +15,15 @@ aosp-nav 自动弥合这个鸿沟:
 1. **检测** —— 打开 AOSP 内任意 `.java` 文件, 插件从文件路径向上找到 AOSP 根 (在此之前完全静默);
 2. **选择** —— 扫描 `out/soong/.intermediates`, 每模块只保留一套必要产物, 排除整个桩家族, 并保证真身永远排在可疑产物之前;
 3. **注入** —— 将有序 jar 列表写入 `java.project.referencedLibraries`,应用 AOSP 兼容开关 (禁用 Gradle/Maven 导入器、排除 `out/`/`.repo/`), 并让文件监视/搜索避开庞大的 `out/` 树 (`files.watcherExclude`、`search.exclude`); 写入自动完成, 无需确认, 失败会在下次打开文件时自动重试;
-4. **护栏** —— eclipse guard 扫描 workspace 内散落的 `.project`+`.classpath` 遗留目录 (旧 jdtls/buildship 会话产物), 把它们排除出导入检测, 保证 jdt.ls 为你的目录创建 invisible project、`referencedLibraries` 真正生效 (见 FAQ);
+4. **护栏** —— eclipse guard 扫描 workspace 内含 `.project` 的遗留目录 (旧 jdtls/buildship 会话产物), 把它们排除出导入检测, 保证 jdt.ls 为你的目录创建 invisible project、`referencedLibraries` 真正生效 (见 FAQ);
 5. **缓存** —— 列表持久化, 由算法版本号或排除配置指纹自动失效。修改配置即生效, 无需手动清理。
 
 ## 依赖
 
-- VSCode >= 1.85
+- VSCode >= 1.95
 - [Java 语言支持](https://marketplace.visualstudio.com/items?itemName=redhat.java) (`redhat.java`)——通过 `extensionDependencies` 自动安装
 - 可选, Kotlin 跳转: [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`)——见 [Kotlin 支持](#kotlin-支持实验性)
+- 可选, C/C++ 跳转: [clangd](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd) (`llvm-vs-code-extensions.vscode-clangd`)。扩展不自带 clangd 二进制, 需把 `clangd.path` 指向 AOSP prebuilt (`prebuilts/clang/host/linux-x86/clang-*/bin/clangd`), 或接受插件的一次性提示
 - **已编译**的 AOSP 树 (存在 `out/soong/.intermediates`)
 
 大代码树建议调高语言服务器堆内存 (用户 settings.json):
@@ -41,6 +42,16 @@ aosp-nav 自动弥合这个鸿沟:
 workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测以打开的文件为准, 不依赖 workspace 位置。若 guard 首次在工作区发现 Eclipse 元数据遗留目录 (常见于打开 AOSP 根目录、且此前用过 nvim 版插件或 buildship 的机器), 会提示一次性"清理并重载" (即 `java.clean.workspace`): 清理会重建语言服务器工作区, 之后 Eclipse 首次索引约 30-60 分钟, 属一次性开销。
 
 提示信息跟随 VS Code 显示语言: 中文环境显示中文, 其他语言一律英文。
+
+## 安装与验证 (用户清单)
+
+1. 安装 `redhat.java` (扩展依赖)。C/C++ 需另外安装 `llvm-vs-code-extensions.vscode-clangd`——clangd 扩展不自带服务端。
+2. 在与 AOSP checkout 相同的环境里安装 VSIX。Remote-WSL 下在 WSL 终端执行 `code --install-extension aosp-nav-0.1.9.vsix`, 然后重载窗口。
+3. 把 AOSP checkout 作为 workspace 打开。多根窗口可用, 但同一窗口内所有 C/C++ 文件共用一份 `clangd.arguments`。
+4. **Java**: 打开任意 `.java`, 等状态栏变为 `$(check) AOSP:<n>`。首次注入 `sourcePaths` 会提示重载窗口——请接受, 否则本次会话 jdt.ls 仍按 jar 跳转。修改 `aosp-nav.java.sourceRoots` 后同样需要重载。
+5. **C/C++**: 把 `clangd.path` 指向 `<root>/prebuilts/clang/host/linux-x86/clang-r*/bin/clangd` (或接受首次打开时的建议)。打开一个 `.cpp`; 首个文件可能先用旧参数启动, 约 800 ms 去抖后重启一次 clangd, 之后复用。验证: 打开一个包含 `#include` 的 C/C++ 文件, 对文件内引用的符号按 F12 → 应落到源码树内的对应头文件。`AOSP: Show Diagnostics` 中 `cpp origin` 应显示 `compdb` 或 `cc_deps`。
+6. **生成头 (AIDL/protobuf 产物等)**: `cc_deps` 故意不包含 `out/soong/.intermediates`。在同一棵树执行 `make SOONG_GEN_COMPDB=1 nothing` (或 `m SOONG_GEN_COMPDB=1 nothing`) 生成官方 compdb, 再重载一次窗口切换到 compdb 档。
+7. **需要重载窗口的场景仅限**: 首次注入 `sourcePaths`、修改 `aosp-nav.java.sourceRoots`、以及会话开始后才生成 compdb 需要切换档位。C/C++ 增量条目写入与普通 `clangd.arguments` 变更都不需要重载。
 
 ## 命令
 
@@ -65,8 +76,47 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = 用户列表追加到默认值后; `replace` = 丢弃默认值    |
 | `aosp-nav.settingsScope` | `"workspace"` | `referencedLibraries` 与 Gradle/Maven 导入器开关的写入位置: `workspace` (仓库内 `.vscode/settings.json`, 不影响其他 Java 工程) 或 `global` (用户 settings, 多窗口共享, 但绝对路径 jar 会污染非 AOSP 的 Java 工程)。0.1.2 起写入不再需要确认; 切换 scope 时插件会自动清掉自己先前写在另一层的旧列表。你自己改回 `true` 的开关插件不会再动 |
 | `aosp-nav.kotlin.enabled` | `false` | 实验性: 将同一份 jar 列表经 fwcd kotlin-language-server 的全局 classpath 脚本注入 (见 [Kotlin 支持](#kotlin-支持实验性)) |
+| `aosp-nav.java.sourceRoots` | `["frameworks/base/core/java"]` | 写入 workspace 层 `java.project.sourcePaths` 的源码根 (相对 AOSP 根或绝对路径), 让跳转落到真实 `.java` 而非反编译 jar。空数组关闭注入; 修改后需重载窗口 |
+| `aosp-nav.cpp.enabled` | `true` | C/C++ 走 clangd (见 [C/C++ 跳转](#cc-跳转-clangd)) |
+| `aosp-nav.cpp.restartDebounceMs` | `800` | `clangd.arguments` 真正变化后重启 clangd 的 debounce; 后续增量 CDB 条目由 clangd 自动重载, 不重启 |
+| `aosp-nav.cpp.suggestClangdPath` | `true` | 提示把 `clangd.path` 指向 AOSP prebuilt (仅在用户点击后写入) |
+| `aosp-nav.cpp.curatedIncludes` | 见下 | 仅 Android.bp 兜底层使用的 include 目录 (相对 AOSP 根, 不存在的会跳过) |
+| `aosp-nav.cpp.headerLibDepth` | `3` | Android.bp 兜底层中同文件 `header_libs` 的最大解析深度 |
 
 多仓库窗口说明: `global` 档下, 同一窗口打开不同子仓库的文件时注入 jar 的**并集** (重叠度本来就很高)。默认 `workspace` 档按仓库写入——每个子仓库用独立窗口打开即可获得严格的 per-repo classpath。
+
+## Java 源码跳转 (`java.project.sourcePaths`)
+
+默认跨模块跳转落在注入 jar 的反编译视图。插件因此把 `aosp-nav.java.sourceRoots` (默认 `frameworks/base/core/java`) 写入 workspace 层 `java.project.sourcePaths` (相对 workspace folder 的路径; 绝对 AOSP 路径不会进入用户设置)。真树上跨模块引用默认源码根内的类型时, 会跳到 `frameworks/base/core/java` 下的真实 `.java` 文件, 而不是反编译视图。
+
+两个刻意的限制:
+
+- **列表按设计不完整。** 注入 `sourcePaths` 会关闭 jdt.ls 的逐文件源码推断, 未列出的模块只丢**源码**跳转, jar 跳转仍保留。把常改模块的源码根加进 `aosp-nav.java.sourceRoots`。整树写入不可行 (真树 21 万打包 `.java` / 8.4k 源码根并集)。
+- **必须重载窗口。** jdt.ls 在 import 阶段读取 `sourcePaths`, 运行期写入对当前会话无效; 列表变化时插件会提示一次"重载窗口"(带按钮)。插件不会调用 `java.project.getAll` / `getClasspaths` 探测结果——真树上它们会阻塞数分钟。
+
+## C/C++ 跳转 (clangd)
+
+在检测到的 AOSP 根内打开 C/C++ 文件时, 插件按三级链路给 clangd 提供真实编译参数:
+
+1. **compdb** — 若存在 `out/soong/development/ide/compdb/compile_commands.json` (`make SOONG_GEN_COMPDB=1 nothing` 生成), 直接把 clangd 指向该目录, 不复制、不重写。
+2. **cc_deps** — 若存在 `out/soong/module_bp_cc_deps.json` (常规构建会写), 按行流式读取打开文件所属模块段 (~14k 模块 / ~147k srcs, 避免每次全量解析)。header 目录转 `-I`, system 目录转 `-isystem`, flag 原样保留, 死路径剪枝, 由 bionic `uapi/asm-*` 推导 `--target`。只为当前文件向插件管理的 `compile_commands.json` (扩展 globalStorage) 增量 upsert 一条。
+3. **Android.bp** — 仅当前两者都不存在时兜底: 最近的 `Android.bp` + 同文件 `header_libs` + `aosp-nav.cpp.curatedIncludes`。
+
+**为什么很少重启 clangd。** clangd 只在进程启动时读 `clangd.arguments`, 但文档变化后会重载 compilation database。因此:
+
+- 新打开文件写入/更新条目后无需重启;
+- 仅当生效的参数列表真正变化 (如 compdb 出现、CDB 目录变化) 才在 `aosp-nav.cpp.restartDebounceMs` (默认 800 ms) 去抖后执行一次 `clangd.restart`;
+- 重复打开同一文件、写入相同条目都不会重启。
+
+用户可感知影响: 会话内第一个 C/C++ 文件可能先用上一次参数启动 clangd, 随后发生一次去抖重启 (短暂的 clangd 重启/preamble 重解析, 补全稍后恢复); 之后继续打开文件不再重启。
+
+插件绝不覆盖你手写的 `--compile-commands-dir`。真树验收: 打开一个引用 `libbase` 头文件的 C++ 文件, 其符号经 cc_deps 链路 (112 个参数, target `aarch64-linux-android`) 跳转到源码树内的对应头文件。
+
+已知限制:
+
+- **cc_deps 不含生成头。** AIDL/protobuf 产物在 `out/soong/.intermediates`, `module_bp_cc_deps.json` 不收录。包含由 AIDL/protobuf 生成的头的文件, 在该头生成/官方 compdb 生成前会持续报错, 插件不会伪造 include 路径掩盖。
+- **头文件与 bp 兜底是启发式。** 头文件通常不在模块 `srcs` 中; 兜底层也解析不了父目录 `Android.bp` 里的 `header_libs`/`cc_defaults` (nvim 版为此建全树索引, VS Code 版未做)。可靠链路仍是 `cc_deps`。
+- **一个窗口只有一份 `clangd.arguments`。** 多根窗口下 flag 跟随最后打开的 AOSP 根; 请每个 checkout 单独开窗口。
 
 ## Jar 选择规则
 
@@ -104,11 +154,11 @@ Eclipse 后台索引还在跑 (状态栏转圈)。等 CPU 降下来——大树�
 
 ### 状态栏提示 "N stale" / 打开 AOSP 根目录后跳转全挂 (eclipse guard)
 
-jdt.ls 的 `java.project.referencedLibraries` **只对 invisible project 生效**; 而树里任何同时含 `.project` 和 `.classpath` 的子目录都会被当作真实 Eclipse 工程导入, 导致 invisible project 永远不创建、注入的 jar 完全无效——打开的文件落入无 classpath 的 default project, 跳转全挂。这些目录一般是早年 nvim-jdtls/buildship 会话遗留的元数据 (典型如 `external/<lib>/`、或曾用旧工具打开过的子仓库), 0.1.2 之前打开 AOSP 根目录必然踩中。
+jdt.ls 的 `java.project.referencedLibraries` **只对 invisible project 生效**; 而树里任何含 `.project` 的子目录都会被当作真实 Eclipse 工程导入, 导致 invisible project 永远不创建、注入的 jar 完全无效——打开的文件落入无 classpath 的 default project, 跳转全挂。这些目录一般是早年 nvim-jdtls/buildship 会话遗留的元数据 (典型如 `external/<lib>/`、或曾用旧工具打开过的子仓库), 0.1.2 之前打开 AOSP 根目录必然踩中。
 
 处理 (自动): guard 把这些目录逐个写进 workspace 层 `java.import.exclusions` (绝对路径精确匹配, 不影响其他工程), 并提示一次性"清理并重载"——因为已导入的工程持久化在语言服务器工作区里, 必须 `java.clean.workspace` 重建后排除才生效。清理后 Eclipse 首次索引约 30-60 分钟, 此后不再需要。也可手动执行 `AOSP: Fix Eclipse Metadata Blockers`。
 
-注: 只有 `.project` 而无 `.classpath` 的目录 (如 nvim 插件留下的 `packages/modules/Connectivity/.project`) 无害, 不会被 guard 处理。
+注: 只要含 `.project` 就足以阻断根 invisible project, 判据只看 `.project` 是否存在, 不要求 `.classpath`, 也没有深度上限 (真树有 159 个此类目录, 其中 4 个深于 5 层)。只排除一部分等于没有 invisible project。
 
 ### Java 报 "Syntax Server ... -32097" 或 "An error has occurred ... config_ss_linux"
 
@@ -128,7 +178,7 @@ cp "$EXT/server/config_ss_linux/config.ini" "$GS/config_ss_linux/config.ini"
 
 ### 卡在 "Importing Gradle project(s)" / "Validating Gradle wrapper checksum"
 
-AOSP 树内散落着少量 build.gradle (如 frameworks/base/tests/UiBench)。插件会自动禁用两个导入器, 写在 `aosp-nav.settingsScope` 指定的层 (默认是仓库内 `.vscode/settings.json`, 因此你自己的其他 Java 工程仍保留 Gradle 支持)。若需手动设置 (或使用旧版本), 加上:
+AOSP 树内散落着少量 build.gradle (多见于测试目录)。插件会自动禁用两个导入器, 写在 `aosp-nav.settingsScope` 指定的层 (默认是仓库内 `.vscode/settings.json`, 因此你自己的其他 Java 工程仍保留 Gradle 支持)。若需手动设置 (或使用旧版本), 加上:
 
 ```jsonc
 "java.import.gradle.enabled": false,
