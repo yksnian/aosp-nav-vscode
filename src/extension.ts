@@ -555,7 +555,9 @@ export function activate(ctx: vscode.ExtensionContext): void {
         lines.push({
           ok: clangdPath ? true : null,
           label: "clangd.path",
-          detail: clangdPath || `(unset)${cand ? `; AOSP prebuilt: ${cand}` : ""}`,
+          detail: clangdPath
+            ? clangdPath
+            : `(not user-set; clangd falls back to "clangd" on PATH)${cand ? `; AOSP prebuilt: ${cand}` : ""}`,
           action: !clangdPath && cand ? "set 'clangd.path' to the AOSP prebuilt (extension bundles none)" : undefined,
         });
         const ca = vscode.workspace.getConfiguration("clangd").get<string[]>("arguments") ?? [];

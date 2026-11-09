@@ -188,8 +188,9 @@ async function suggestClangdPath(
   const cfg = getConfig();
   if (!cfg.cpp.suggestClangdPath || state.suggested) return;
   state.suggested = true;
-  const jc = vscode.workspace.getConfiguration("clangd");
-  if (jc.get<string>("path")) return;
+  // get() would always be truthy (extension default "clangd"); only a
+  // user-authored value in some scope counts as "already configured".
+  if (clangdPathSetting()) return;
   const candidate = await findAospClangd(root);
   if (!candidate) return;
   const button = vscode.l10n.t("Set clangd.path");
@@ -202,6 +203,7 @@ async function suggestClangdPath(
     vscode.l10n.t("Later")
   );
   if (pick !== button) return;
+  const jc = vscode.workspace.getConfiguration("clangd");
   await jc.update("path", candidate, vscode.ConfigurationTarget.Global);
   logLine(log, `clangd.path set to ${candidate}`);
   const ext = vscode.extensions.getExtension(CLANGD_EXTENSION);
@@ -481,9 +483,17 @@ export async function cppStatus(
   };
 }
 
-/** Path the clangd extension would use, for diagnostics only. */
-export function clangdPathSetting(): string {
-  return vscode.workspace.getConfiguration("clangd").get<string>("path") ?? "";
+/** `clangd.path` as written by the user in any settings scope, or null.
+ *  The clangd extension declares default "clangd" (look on PATH), so the
+ *  effective `get()` value is never empty — it cannot distinguish "unset"
+ *  from "configured". */
+export function clangdPathSetting(): string | null {
+  // this VS Code d.ts has no `machineValue` on the inspection type, but the
+  // runtime object may carry one (Machine-level settings.json on remote)
+  const insp = vscode.workspace.getConfiguration("clangd").inspect<string>("path") as
+    | { workspaceValue?: string; globalValue?: string; machineValue?: string }
+    | undefined;
+  return insp?.workspaceValue ?? insp?.globalValue ?? insp?.machineValue ?? null;
 }
 
 export function missingClangdHint(): string | null {
