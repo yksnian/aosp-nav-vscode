@@ -28,6 +28,8 @@ import {
   selectJavaSourceRootsByModule,
 } from "./jdtls/modulePicker";
 import { computeInjectedJars } from "./jdtls/jarPlan";
+import { jdtlsWorkspaceDir, probeJdtlsCrash } from "./jdtls/crashSignals";
+import type { JdtlsCrashProbe } from "./jdtls/crashSignals";
 import { applyKotlinClasspath, probeKotlinChannel, clearKotlinChannel, pruneKotlinRootMap } from "./kotlin/classpathChannel";
 import { ensureKotlinExtension } from "./kotlin/depManager";
 import {
@@ -83,6 +85,12 @@ const MAX_CONCURRENT_SCANS = 2;
 let activeScans = 0;
 /** Roots that already got the one-time "first Eclipse index" notice. */
 const firstIndexNotified = new Set<string>();
+
+/** workspaceState key holding the newest crash-evidence mtime already
+ *  reported, so a heap dump / OOM trace prompts once, not on every scan. */
+const CRASH_PROMPTED_KEY = "aosp-nav.jdtlsCrashPromptedAt";
+/** Last confirmed crash probe of this window (diagnostics reads it). */
+let lastCrashProbe: JdtlsCrashProbe | null = null;
 
 const SOONG_BASES = ["out/soong/.intermediates", "out/.soong/.intermediates"];
 /** Delay before the Eclipse-metadata guard walks the tree. The walk reads every
@@ -158,6 +166,40 @@ export function activate(ctx: vscode.ExtensionContext): void {
     inflight.set(root, p);
     scanQueue.push({ root, release });
     drainQueue();
+    return p;
+  };
+
+  /** Report jdt.ls crash evidence (heap dump / OutOfMemoryError trace) and
+   *  prompt once per new evidence. A normal server restart leaves no trace, so
+   *  it never reaches the prompt. The extension only NAMES the actionable
+   *  settings (java.jdt.ls.vmargs, java.autobuild.enabled) — it never writes
+   *  them. */
+  const probeCrash = async (): Promise<JdtlsCrashProbe | null> => {
+    const storage = ctx.storageUri?.fsPath;
+    if (!storage) return null;
+    const wsDir = jdtlsWorkspaceDir(storage);
+    const p = await probeJdtlsCrash(wsDir);
+    lastCrashProbe = p.confirmed ? p : null;
+    if (!p.confirmed) return p;
+    channel.appendLine(
+      `[aosp-nav] jdt.ls crash evidence in ${wsDir}: ${p.evidence}${p.oomSample ? ` — ${p.oomSample}` : ""}`
+    );
+    const seen = ctx.workspaceState.get<number>(CRASH_PROMPTED_KEY) ?? 0;
+    if (p.newestMs > seen) {
+      await ctx.workspaceState.update(CRASH_PROMPTED_KEY, p.newestMs);
+      const btn = vscode.l10n.t("Show Diagnostics");
+      void vscode.window
+        .showWarningMessage(
+          vscode.l10n.t(
+            "[aosp-nav] The Java language server left crash evidence ({0}). Raise java.jdt.ls.vmargs (e.g. -Xmx6G) and consider java.autobuild.enabled=false; aosp-nav does not change these settings.",
+            p.evidence
+          ),
+          btn
+        )
+        .then((pick) => {
+          if (pick === btn) void vscode.commands.executeCommand("aosp-nav.diagnostics");
+        });
+    }
     return p;
   };
 
@@ -354,6 +396,13 @@ export function activate(ctx: vscode.ExtensionContext): void {
       // The module selection (and the seed written above) is already in the
       // config by the time this runs.
       await applySourceRootsAndPromptReload(ctx, (m) => channel.appendLine(m));
+      // crash observability: runs after the injection so the message is not
+      // mixed with jar planning; never fails the session
+      try {
+        await probeCrash();
+      } catch (e) {
+        channel.appendLine(`[aosp-nav] crash probe failed: ${e}`);
+      }
       const verifyNote = verify
         ? `, cache verified ${verify.checked} jar(s)${verify.sampled ? " (sampled)" : ""}, ${verify.missing} missing`
         : "";
@@ -470,6 +519,11 @@ export function activate(ctx: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("aosp-nav.diagnostics", async () => {
       openOutput(channel);
+      // fresh probe (heap dump / OOM trace); falls back to the last scan result
+      let crash: JdtlsCrashProbe | null = lastCrashProbe;
+      try {
+        crash = await probeCrash();
+      } catch { /* keep the cached probe */ }
       const lines: DiagLine[] = [];
       lines.push({ ok: null, label: "extension", detail: `${ctx.extension.packageJSON.version}` });
       const javaExt = vscode.extensions.getExtension("redhat.java");
@@ -703,6 +757,20 @@ export function activate(ctx: vscode.ExtensionContext): void {
         detail: vmargs || "(unset)",
         action: vmargs.includes("-Xmx") ? undefined : "add e.g. java.jdt.ls.vmargs: -Xmx6G ... in user settings",
       });
+      lines.push(
+        crash && crash.confirmed
+          ? {
+              ok: false,
+              label: "jdt.ls crash",
+              detail: `${crash.evidence}${crash.oomSample ? ` — ${crash.oomSample}` : ""}`,
+              action: "raise java.jdt.ls.vmargs (e.g. -Xmx6G) and/or set java.autobuild.enabled=false; aosp-nav does not write these settings",
+            }
+          : {
+              ok: true,
+              label: "jdt.ls crash",
+              detail: "no heap dump / OutOfMemoryError trace in the language-server workspace",
+            }
+      );
       // eclipse guard
       const pending = await isCleanPending(ctx);
       const actionNeeded = getBlockedCount();
