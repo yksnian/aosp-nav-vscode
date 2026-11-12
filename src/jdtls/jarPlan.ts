@@ -1,6 +1,11 @@
 import * as fs from "fs/promises";
 import * as path from "path";
-import { autoModulesForFolder, loadJavaModuleIndex, scopedImportExclusions } from "./moduleRoots";
+import {
+  autoModulesForFolder,
+  isAutoExcludedSegment,
+  loadJavaModuleIndex,
+  scopedImportExclusions,
+} from "./moduleRoots";
 import type { JavaModuleIndex } from "./moduleRoots";
 import { closureJars } from "./closure";
 
@@ -24,6 +29,28 @@ import { closureJars } from "./closure";
  *  not the 40-50 MB framework stub. */
 
 export const COMMON_MODULES = ["core-oj", "core-libart", "framework-annotations-lib"];
+
+/** Test-support jars, injected only when the module selection itself is a test
+ *  tree (a selected dir matches isAutoExcludedSegment — e.g. the Telephony
+ *  window with tests checked). Production closures can never reach these
+ *  modules (only test modules link them), so keeping them out of the
+ *  unconditional common set leaves every other window's classpath unchanged.
+ *  Missing on disk (never built) they degrade to the commonStarved log line,
+ *  same as any common module. */
+export const COMMON_TEST_MODULES = ["platform-test-annotations", "flag-junit-base", "testables"];
+
+/** true when the effective module selection is itself a test tree: the window
+ *  folder is test-scoped, or a selected dir contains a test segment. In that
+ *  case the closure cannot reach the test-support jars (only test modules link
+ *  them), so COMMON_TEST_MODULES join the common set. Auto-selected seeds never
+ *  trigger this — autoModulesForFolder already excludes test dirs. */
+function isTestSelection(
+  moduleDirs: readonly string[],
+  folder?: string
+): boolean {
+  if (folder && folder.split(/[\\/]/).some(isAutoExcludedSegment)) return true;
+  return moduleDirs.some((dir) => dir.split(/[\\/]/).some(isAutoExcludedSegment));
+}
 
 /** log cap for the unmapped module list (full list stays in the result) */
 const UNMAPPED_LOG_LIMIT = 40;
@@ -210,7 +237,8 @@ export async function computeInjectedJars(
 
   // same module set + same index/build ⇒ same closure: reuse it (the jars are
   // still stat'ed, so a rebuild that removed them falls through to a recompute)
-  const cacheKey = [root, seeds.slice().sort().join("\u0000"), depsM, ninjaM].join("\u0001");
+  const testSel = isTestSelection(seeds, opts.folder);
+  const cacheKey = [root, seeds.slice().sort().join("\u0000"), depsM, ninjaM, testSel].join("\u0001");
   const cached = closureCache.get(cacheKey);
   if (cached) {
     let allPresent = true;
@@ -242,7 +270,9 @@ export async function computeInjectedJars(
   if (!index) return fallback(fullJars, `${depsFile} not found or not valid JSON`, log);
 
   const r = await closureJars(index, seeds, {
-    commonModules: COMMON_MODULES,
+    commonModules: testSel
+      ? [...COMMON_MODULES, ...COMMON_TEST_MODULES]
+      : COMMON_MODULES,
     exists,
     // variant fallback for every module whose index variant is not on disk
     rescue: (name, e) => rescueBuiltJar(root, name, e.path),

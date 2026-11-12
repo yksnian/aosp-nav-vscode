@@ -278,4 +278,54 @@ describe("computeInjectedJars", () => {
     expect(r.mode).toBe("fallback");
     expect(r.reason).toBe("no module selection");
   });
+
+  it("adds the test common set when the selection is a test tree", async () => {
+    const root = await makeRoot(
+      {
+        app: { path: ["packages/services/Telephony/src"], jars: ["out/j/a.jar"] },
+        // test seed module that links NONE of the test-support modules:
+        // they can only join via COMMON_TEST_MODULES
+        tests: { path: ["packages/services/Telephony/tests"], jars: ["out/j/t.jar"] },
+        "platform-test-annotations": {
+          path: ["platform_testing/libraries/annotations"],
+          jars: ["out/j/pta.jar"],
+        },
+        "flag-junit-base": { path: ["platform_testing/libraries/flag-helpers/junit"], jars: ["out/j/fjb.jar"] },
+        testables: { path: ["frameworks/base/tests/testables"], jars: ["out/j/testables.jar"] },
+        "core-oj": { path: ["libcore"], jars: ["out/j/core-oj.jar"] },
+        "core-libart": { path: ["libcore"], jars: ["out/j/core-libart.jar"] },
+      },
+      ["out/j/a.jar", "out/j/t.jar", "out/j/pta.jar", "out/j/fjb.jar", "out/j/testables.jar", "out/j/core-oj.jar", "out/j/core-libart.jar"]
+    );
+    const r = await computeInjectedJars(
+      root,
+      ["packages/services/Telephony/tests"],
+      FULL,
+      NOOP
+    );
+    expect(r.mode).toBe("closure");
+    // test-support jars join via the test common set despite no dependency edge
+    expect(r.jars).toContain(path.join(root, "out/j/pta.jar"));
+    expect(r.jars).toContain(path.join(root, "out/j/fjb.jar"));
+    expect(r.jars).toContain(path.join(root, "out/j/testables.jar"));
+    // libcore stays in the set for a test selection too (union, not replacement)
+    expect(r.jars).toContain(path.join(root, "out/j/core-oj.jar"));
+    expect(r.jars).toContain(path.join(root, "out/j/core-libart.jar"));
+  });
+
+  it("does not add the test common set for a production selection", async () => {
+    const root = await makeRoot(
+      {
+        app: { path: ["packages/services/Telephony/src"], jars: ["out/j/a.jar"] },
+        testables: { path: ["frameworks/base/tests/testables"], jars: ["out/j/testables.jar"] },
+        "core-oj": { path: ["libcore"], jars: ["out/j/core-oj.jar"] },
+        "core-libart": { path: ["libcore"], jars: ["out/j/core-libart.jar"] },
+      },
+      ["out/j/a.jar", "out/j/testables.jar", "out/j/core-oj.jar", "out/j/core-libart.jar"]
+    );
+    const r = await computeInjectedJars(root, ["packages/services/Telephony/src"], FULL, NOOP);
+    expect(r.mode).toBe("closure");
+    expect(r.jars).not.toContain(path.join(root, "out/j/testables.jar"));
+    expect(r.jars).toContain(path.join(root, "out/j/core-oj.jar"));
+  });
 });
