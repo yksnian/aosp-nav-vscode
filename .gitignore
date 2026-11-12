@@ -4,3 +4,6 @@ out/
 *.tgz
 coverage/
 .vscode-test/
+
+# local planning notes: kept on disk, not tracked
+/docs/改进计划.md
