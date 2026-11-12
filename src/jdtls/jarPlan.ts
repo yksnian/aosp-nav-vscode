@@ -67,9 +67,11 @@ interface ClosureCacheEntry {
   dropped: number;
   unknownSeeds: string[];
   missingCommon: string[];
+  commonStarved: string[];
   visited: number;
   /** modules auto-selected for a subtree window (null for an explicit pick) */
   auto: number | null;
+  testSelection: boolean;
 }
 
 const CLOSURE_CACHE_LIMIT = 6;
@@ -125,11 +127,17 @@ export interface JarPlanResult {
   dropped: number;
   unknownSeeds: string[];
   missingCommon: string[];
+  /** common modules (incl. the test set) with no built jar on disk — the
+   *  diagnostics row lists them so the user knows what to build */
+  commonStarved: string[];
   /** modules visited by the closure traversal (informational) */
   visited: number;
   /** modules auto-selected for a subtree window (absent when the selection was
    *  explicit or the plan fell back) */
   auto?: number;
+  /** true when the common set also carried COMMON_TEST_MODULES (diagnostics
+   *  wording only) */
+  testSelection: boolean;
 }
 
 /** Options for windows that have no explicit module selection.
@@ -144,14 +152,31 @@ export interface JarPlanOptions {
   importExclusions?: readonly string[];
 }
 
+/** AOSP lays a module's jars out as
+ *  `out/soong/.intermediates/<module path>/<name>/<variant>/<kind>/<name>.jar`,
+ *  so the file name alone identifies the module — no need to load the 59 MB
+ *  index on the fallback path. */
+function commonFirst(jars: readonly string[], names: readonly string[]): string[] {
+  const wanted = new Set(names.map((n) => `${n}.jar`));
+  const common: string[] = [];
+  const rest: string[] = [];
+  for (const j of jars) (wanted.has(path.basename(j)) ? common : rest).push(j);
+  return [...common, ...rest];
+}
+
 function fallback(
   fullJars: readonly string[],
   reason: string,
-  log: (m: string) => void
+  log: (m: string) => void,
+  commonNames: readonly string[] = COMMON_MODULES
 ): JarPlanResult {
-  log(`[aosp-nav] jarPlan: full-list fallback (${reason}) — ${fullJars.length} jars`);
+  // Same classpath-order requirement as the closure path: the public
+  // android.annotation.* definitions must precede the non-public stub copies.
+  // The rest keeps the scanned order untouched.
+  const jars = commonFirst(fullJars, commonNames);
+  log(`[aosp-nav] jarPlan: full-list fallback (${reason}) — ${jars.length} jars`);
   return {
-    jars: [...fullJars],
+    jars,
     mode: "fallback",
     reason,
     unmapped: [],
@@ -160,7 +185,9 @@ function fallback(
     dropped: 0,
     unknownSeeds: [],
     missingCommon: [],
+    commonStarved: [],
     visited: 0,
+    testSelection: false,
   };
 }
 
@@ -174,8 +201,14 @@ export async function computeInjectedJars(
   let seeds = [...new Set(selectedModuleDirs.map((s) => s.trim()).filter(Boolean))];
   /** modules auto-selected for this window folder (null: explicit selection) */
   let auto: number | null = null;
+  /** common-set module names for the current selection (test trees also get
+   *  the test-support jars); resolved on demand so every fallback branch —
+   *  including the ones that return before the index is loaded — can put the
+   *  common jars first. */
+  const namesFor = (): readonly string[] =>
+    isTestSelection(seeds, opts.folder) ? [...COMMON_MODULES, ...COMMON_TEST_MODULES] : COMMON_MODULES;
   if (seeds.length === 0 && (!opts.folder || path.resolve(opts.folder) === path.resolve(root))) {
-    return fallback(fullJars, "no module selection", log);
+    return fallback(fullJars, "no module selection", log, namesFor());
   }
 
   const depsFile = path.join(root, "out", "soong", "module_bp_java_deps.json");
@@ -196,7 +229,7 @@ export async function computeInjectedJars(
     mtime(path.join(root, "out", "soong", "build.ninja")),
   ]);
   if (depsM !== null && ninjaM !== null && ninjaM > depsM) {
-    return fallback(fullJars, "module index is older than the last build", log);
+    return fallback(fullJars, "module index is older than the last build", log, namesFor());
   }
 
   // Subtree window (Connectivity, NetworkStack, ...) with no explicit
@@ -207,12 +240,12 @@ export async function computeInjectedJars(
   if (seeds.length === 0) {
     index = await loadJavaModuleIndex(root, log);
     if (!index) {
-      return fallback(fullJars, "no module selection and the build index is unavailable", log);
+      return fallback(fullJars, "no module selection and the build index is unavailable", log, namesFor());
     }
     const scopedExcl = scopedImportExclusions(opts.importExclusions ?? [], [opts.folder!]);
     seeds = [...new Set(autoModulesForFolder(index, root, opts.folder!, scopedExcl))];
     if (seeds.length === 0) {
-      return fallback(fullJars, "no module selection and no module dirs under the window folder", log);
+      return fallback(fullJars, "no module selection and no module dirs under the window folder", log, namesFor());
     }
     auto = seeds.length;
     log(
@@ -259,15 +292,17 @@ export async function computeInjectedJars(
         dropped: cached.dropped,
         unknownSeeds: cached.unknownSeeds,
         missingCommon: cached.missingCommon,
+        commonStarved: cached.commonStarved,
         visited: cached.visited,
         auto: cached.auto ?? undefined,
+        testSelection: cached.testSelection,
       };
     }
     closureCache.delete(cacheKey);
   }
 
   if (!index) index = await loadJavaModuleIndex(root, log);
-  if (!index) return fallback(fullJars, `${depsFile} not found or not valid JSON`, log);
+  if (!index) return fallback(fullJars, `${depsFile} not found or not valid JSON`, log, namesFor());
 
   const r = await closureJars(index, seeds, {
     commonModules: testSel
@@ -301,6 +336,7 @@ export async function computeInjectedJars(
   // common modules with no surviving index jar: look the built jar up directly
   // in .intermediates (its variant/kind differ from what the index registers)
   const commonRescued: string[] = [];
+  const commonUnbuilt: string[] = [];
   for (const name of r.commonStarved) {
     const dir = index.byName.get(name)?.path;
     if (!dir) continue;
@@ -309,35 +345,54 @@ export async function computeInjectedJars(
       log(`[aosp-nav] jarPlan: index variant of common module ${name} is not on disk — using ${rel}`);
       commonRescued.push(rel);
     } else {
+      commonUnbuilt.push(name);
       log(`[aosp-nav] jarPlan: common module ${name} has no built jar on disk (not built yet?)`);
     }
   }
 
   const allRel = [...r.jars, ...commonRescued];
-  if (allRel.length === 0) return fallback(fullJars, "closure produced 0 existing jars", log);
+  if (allRel.length === 0) return fallback(fullJars, "closure produced 0 existing jars", log, namesFor());
+
+  // Common-set jars go FIRST. Several AOSP stub jars (android_stubs_current,
+  // android_system_stubs_current, private-stub-annotations-jar) also define
+  // android.annotation.* but without `public` (javap-verified on a real tree),
+  // and JDT resolves a duplicated FQN from the first classpath entry it meets.
+  // Alphabetical order put .../frameworks/base/api/... before
+  // .../frameworks/libs/modules-utils/..., so the non-public copies won and
+  // every NonNull/Nullable reference became IProblem.NotVisibleType.
+  // Both partitions keep their existing (sorted) order, so the result stays
+  // deterministic: same module set ⇒ byte-identical list ⇒ no needless
+  // setRawClasspath.
+  const commonJars = new Set<string>([...r.commonJars, ...commonRescued]);
+  const ordered = [
+    ...allRel.filter((rel) => commonJars.has(rel)),
+    ...allRel.filter((rel) => !commonJars.has(rel)),
+  ];
 
   const rescued = r.rescued + commonRescued.length;
   const label =
     auto === null
       ? `closure of ${seeds.length} module dir(s)`
       : `closure (auto ${auto} module(s) for this folder)`;
-  log(`[aosp-nav] jarPlan: ${label} = ${allRel.length} jars (${r.visited} modules visited, ${r.dropped} dropped, ${rescued} rescued by variant fallback)`);
+  log(`[aosp-nav] jarPlan: ${label} = ${ordered.length} jars (${r.visited} modules visited, ${r.dropped} dropped, ${rescued} rescued by variant fallback)`);
   closureCache.set(cacheKey, {
-    relJars: allRel,
+    relJars: ordered,
     unmapped: r.unmapped,
     starved: r.starved,
     rescued,
     dropped: r.dropped,
     unknownSeeds: r.unknownSeeds,
     missingCommon: r.missingCommon,
+    commonStarved: commonUnbuilt,
     visited: r.visited,
     auto,
+    testSelection: testSel,
   });
   if (closureCache.size > CLOSURE_CACHE_LIMIT) {
     closureCache.delete(closureCache.keys().next().value!);
   }
   return {
-    jars: allRel.map((rel) => path.join(root, rel)),
+    jars: ordered.map((rel) => path.join(root, rel)),
     mode: "closure",
     unmapped: r.unmapped,
     starved: r.starved,
@@ -345,7 +400,9 @@ export async function computeInjectedJars(
     dropped: r.dropped,
     unknownSeeds: r.unknownSeeds,
     missingCommon: r.missingCommon,
+    commonStarved: commonUnbuilt,
     visited: r.visited,
     auto: auto ?? undefined,
+    testSelection: testSel,
   };
 }

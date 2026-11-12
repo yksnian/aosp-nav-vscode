@@ -1,5 +1,6 @@
 {
   "[aosp-nav] Injected {0} dependency jars. The first Eclipse indexing takes about 30-60 minutes (one-time); high CPU is normal, do not restart the language server during it. Later opens are instant.": "[aosp-nav] 已注入 {0} 个依赖 jar。Eclipse 首次索引约需 30-60 分钟(一次性), 期间 CPU 高属正常, 请勿重启语言服务。之后每次打开为秒级。",
+  "[aosp-nav] Could not write java.project.referencedLibraries ({0} jars). Dependency navigation will not work until this is fixed; the next file open retries.": "[aosp-nav] 无法写入 java.project.referencedLibraries ({0} 个 jar)。在修复前依赖跳转不可用; 下次打开文件会自动重试。",
   "Got it": "了解",
   "[aosp-nav] no active file": "[aosp-nav] 无活动文件",
   "[aosp-nav] not an AOSP file": "[aosp-nav] 非 AOSP 文件",

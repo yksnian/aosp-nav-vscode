@@ -47,6 +47,24 @@ describe("computeInjectedJars", () => {
     expect(r.reason).toContain("module_bp_java_deps.json");
   });
 
+  it("puts the common set first on the fallback path, rest untouched", async () => {
+    // no index at all ⇒ the light fallback branch; common jars are recognised
+    // by file name (out/soong/.intermediates/**/<module>/<variant>/<kind>/<module>.jar)
+    const root = await makeRoot(null, []);
+    const stubs =
+      "/x/out/soong/.intermediates/frameworks/base/api/android_stubs_current/android_common/turbine-combined/android_stubs_current.jar";
+    const coreOj =
+      "/x/out/soong/.intermediates/libcore/core-oj/android_common/turbine-combined/core-oj.jar";
+    const sdk = "/x/prebuilts/sdk/current/public/android.jar";
+    const annotations =
+      "/x/out/soong/.intermediates/frameworks/libs/modules-utils/java/framework-annotations-lib/linux_glibc_common/javac/framework-annotations-lib.jar";
+    const full = [stubs, coreOj, sdk, annotations];
+    const r = await computeInjectedJars(root, [], full, NOOP);
+    expect(r.mode).toBe("fallback");
+    expect(r.jars).toEqual([coreOj, annotations, stubs, sdk]);
+    expect(r.jars.length).toBe(full.length);
+  });
+
   it("falls back when the index is older than the last build", async () => {
     const root = await makeRoot(
       { app: { path: ["frameworks/base/core/java"], jars: ["out/j/a.jar"] } },
@@ -78,7 +96,7 @@ describe("computeInjectedJars", () => {
     expect(r.reason).toContain("0 existing jars");
   });
 
-  it("returns the closure ∪ common set as absolute paths", async () => {
+  it("returns the closure ∪ common set as absolute paths, common set first", async () => {
     const root = await makeRoot(
       {
         app: {
@@ -95,15 +113,61 @@ describe("computeInjectedJars", () => {
     const logs: string[] = [];
     const r = await computeInjectedJars(root, ["frameworks/base/core/java"], FULL, (m) => logs.push(m));
     expect(r.mode).toBe("closure");
+    // common jars first (so a public definition wins over the stub copies in
+    // android_stubs_current.jar), each partition keeping its sorted order
     expect(r.jars).toEqual([
-      path.join(root, "out/j/a.jar"),
-      path.join(root, "out/j/b.jar"),
       path.join(root, "out/j/core-libart.jar"),
       path.join(root, "out/j/core-oj.jar"),
+      path.join(root, "out/j/a.jar"),
+      path.join(root, "out/j/b.jar"),
     ]);
     expect(r.unmapped).toEqual([]);
     expect(r.starved).toBe(0);
     expect(logs.some((l) => l.includes("closure of 1 module"))).toBe(true);
+  });
+
+  it("keeps the common-first order stable across identical runs", async () => {
+    const root = await makeRoot(
+      {
+        app: {
+          path: ["frameworks/base/core/java"],
+          jars: ["out/j/a.jar"],
+          dependencies: ["lib", "zeta"],
+        },
+        lib: { path: ["p"], jars: ["out/j/b.jar"] },
+        zeta: { path: ["p"], jars: ["out/j/z.jar"] },
+        "core-oj": { path: ["libcore"], jars: ["out/j/core-oj.jar"] },
+        "core-libart": { path: ["libcore"], jars: ["out/j/core-libart.jar"] },
+        "framework-annotations-lib": {
+          path: ["frameworks/libs/modules-utils/java"],
+          jars: ["out/j/framework-annotations-lib.jar"],
+        },
+      },
+      [
+        "out/j/a.jar",
+        "out/j/b.jar",
+        "out/j/z.jar",
+        "out/j/core-oj.jar",
+        "out/j/core-libart.jar",
+        "out/j/framework-annotations-lib.jar",
+      ]
+    );
+    const first = await computeInjectedJars(root, ["frameworks/base/core/java"], FULL, NOOP);
+    const second = await computeInjectedJars(root, ["frameworks/base/core/java"], FULL, NOOP);
+    // byte-identical list ⇒ settingsChannel's sameList short-circuit holds and
+    // no needless setRawClasspath is issued
+    expect(second.jars).toEqual(first.jars);
+    const names = first.jars.map((j) => path.basename(j));
+    // every common jar precedes every non-common jar, and neither partition is
+    // reordered relative to the sorted baseline
+    expect(names).toEqual([
+      "core-libart.jar",
+      "core-oj.jar",
+      "framework-annotations-lib.jar",
+      "a.jar",
+      "b.jar",
+      "z.jar",
+    ]);
   });
 
   it("logs dangling module names for later tracing", async () => {

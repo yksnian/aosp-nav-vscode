@@ -63,7 +63,8 @@ interface SessionMeta {
   stats?: ScanStats;
   verify?: JarVerifyResult;
   /** how the injected jar list was produced (plan D: dependency closure of the
-   *  selected modules ∪ libcore, or the full-list fallback with its reason) */
+   *  selected modules ∪ the common set, or the full-list fallback with its
+   *  reason) */
   jarSource?: {
     mode: "closure" | "fallback";
     reason?: string;
@@ -75,6 +76,11 @@ interface SessionMeta {
     rescued: number;
     /** unique jar entries the closure dropped (missing on disk / off-tree) */
     dropped: number;
+    /** common-set modules with no built jar on disk (named, so the user knows
+     *  what to build) */
+    commonStarved: string[];
+    /** the common set also carried the test-support modules */
+    testSelection: boolean;
     /** modules auto-selected for a subtree window (absent when explicit) */
     auto?: number;
   };
@@ -95,6 +101,8 @@ const MAX_CONCURRENT_SCANS = 2;
 let activeScans = 0;
 /** Roots that already got the one-time "first Eclipse index" notice. */
 const firstIndexNotified = new Set<string>();
+/** Roots that already got the "referencedLibraries write failed" warning. */
+const libWriteWarned = new Set<string>();
 
 /** workspaceState key holding the newest crash-evidence mtime already
  *  reported, so a heap dump / OOM trace prompts once, not on every scan. */
@@ -377,6 +385,8 @@ export function activate(ctx: vscode.ExtensionContext): void {
           starved: plan.starved,
           rescued: plan.rescued,
           dropped: plan.dropped,
+          commonStarved: plan.commonStarved,
+          testSelection: plan.testSelection,
           auto: plan.auto,
         };
       }
@@ -395,6 +405,22 @@ export function activate(ctx: vscode.ExtensionContext): void {
         status.statusFailed(root);
         s.phase = "failed";
         channel.appendLine(`[aosp-nav] ${root}: referencedLibraries not applied, will retry on next open`);
+        // one warning per root: a silent failure here means navigation simply
+        // does not work, which is exactly the case the log alone never conveys
+        if (!libWriteWarned.has(root)) {
+          libWriteWarned.add(root);
+          void vscode.window
+            .showWarningMessage(
+              vscode.l10n.t(
+                "[aosp-nav] Could not write java.project.referencedLibraries ({0} jars). Dependency navigation will not work until this is fixed; the next file open retries.",
+                jars.length
+              ),
+              vscode.l10n.t("Show Diagnostics")
+            )
+            .then((pick) => {
+              if (pick) void vscode.commands.executeCommand("aosp-nav.diagnostics");
+            });
+        }
         return;
       }
       // Large AOSP root: stop Eclipse from rebuilding on every save. Only when
@@ -640,11 +666,21 @@ export function activate(ctx: vscode.ExtensionContext): void {
               verify,
         });
         if (m.jarSource) {
+          // Name the common-set modules that have no jar on disk: the count
+          // alone ("N unbuilt") left the user guessing what to build.
+          const cs = m.jarSource.commonStarved;
+          const shownCs = cs.slice(0, 5);
+          const csNote = cs.length
+            ? `; common set not built: ${shownCs.join(", ")}${cs.length > shownCs.length ? ` +${cs.length - shownCs.length} more` : ""} (run: m ${shownCs.join(" ")})`
+            : "";
+          const commonLabel = m.jarSource.testSelection
+            ? "common set (libcore + annotations + test support)"
+            : "common set (libcore + annotations)";
           lines.push({
-            ok: m.jarSource.mode === "closure" ? true : null,
+            ok: m.jarSource.mode === "closure" ? cs.length === 0 : null,
             label: "jar source",
             detail: m.jarSource.mode === "closure"
-              ? `closure${m.jarSource.auto ? ` (auto ${m.jarSource.auto} module(s) for this folder)` : " of the selected module dirs"} + libcore common set: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.rescued} rescued by variant fallback, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt; see log)`
+              ? `closure${m.jarSource.auto ? ` (auto ${m.jarSource.auto} module(s) for this folder)` : " of the selected module dirs"} + ${commonLabel}: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.rescued} rescued by variant fallback, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt${csNote})`
               : `full-list fallback (${m.jarSource.reason ?? "unspecified"})`,
           });
         }

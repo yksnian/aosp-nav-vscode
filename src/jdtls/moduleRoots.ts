@@ -94,10 +94,51 @@ export function buildIndex(parsed: Record<string, Record<string, unknown>>): Jav
   return { byName, byPath, moduleCount: byName.size, rootsByPath: new Map() };
 }
 
+/** mtime pair of the build outputs the index describes. Shared cache key
+ *  material (the jar channel's plan cache tracks the same pair): soong rewrites
+ *  module_bp_java_deps.json and build.ninja on every full build, so a changed
+ *  stamp means the parsed index may be stale. */
+export async function indexStamps(
+  aospRoot: string
+): Promise<[number | null, number | null]> {
+  const stat = async (p: string): Promise<number | null> => {
+    try {
+      return (await fs.stat(p)).mtimeMs;
+    } catch {
+      return null;
+    }
+  };
+  const depsM = stat(path.join(aospRoot, "out", "soong", "module_bp_java_deps.json"));
+  const ninjaM = stat(path.join(aospRoot, "out", "soong", "build.ninja"));
+  return Promise.all([depsM, ninjaM]) as Promise<[number | null, number | null]>;
+}
+
+/** Process-level index cache. One scan used to parse the 59 MB JSON twice (jar
+ *  channel + source-path channel), three times with the module picker open; now
+ *  the parse happens once per (root, build outputs) and everyone shares it.
+ *  Keyed by the indexStamps pair, so a soong rewrite invalidates it. Small
+ *  bound: only distinct AOSP roots occupy slots, and multi-root windows are
+ *  rare. */
+interface IndexCacheEntry {
+  depsM: number | null;
+  ninjaM: number | null;
+  index: JavaModuleIndex;
+}
+const INDEX_CACHE_LIMIT = 2;
+const indexCache = new Map<string, IndexCacheEntry>();
+
 export async function loadJavaModuleIndex(
   aospRoot: string,
   log: (m: string) => void
 ): Promise<JavaModuleIndex | null> {
+  const [depsM, ninjaM] = await indexStamps(aospRoot);
+  const hit = indexCache.get(aospRoot);
+  if (hit && hit.depsM === depsM && hit.ninjaM === ninjaM) {
+    log(
+      `[aosp-nav] module index: process cache hit (${hit.index.moduleCount} modules, build outputs unchanged)`
+    );
+    return hit.index;
+  }
   const file = path.join(aospRoot, "out", "soong", "module_bp_java_deps.json");
   let raw: string;
   try {
@@ -114,6 +155,10 @@ export async function loadJavaModuleIndex(
     return null;
   }
   const index = buildIndex(parsed);
+  indexCache.set(aospRoot, { depsM, ninjaM, index });
+  if (indexCache.size > INDEX_CACHE_LIMIT) {
+    indexCache.delete(indexCache.keys().next().value!);
+  }
   log(`[aosp-nav] module index: ${index.moduleCount} modules from ${file} (${Date.now() - t0} ms)`);
   return index;
 }
