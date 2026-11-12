@@ -233,7 +233,7 @@ const FB_BASE = "frameworks/base";
  *  `java.import.exclusions` mixes absolute dir paths (scanned gradle/maven
  *  project dirs: sdk/testapps, test/suite_harness, external test libs, ...)
  *  with simple double-star globs over segment sequences ("packages/apps",
- *  "lenovo"). Both mean "keep jdt.ls from importing this", so the module
+ *  "vendor"). Both mean "keep jdt.ls from importing this", so the module
  *  picker and the auto selection must not offer these dirs either (user
  *  decision 2026-11-10). Patterns other than absolute paths and
  *  double-star-prefixed globs are ignored — jdt.ls itself never writes

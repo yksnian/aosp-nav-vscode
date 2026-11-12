@@ -215,7 +215,7 @@ describe("autoModulesForFolder", () => {
 describe("matchesImportExclusion", () => {
   const entries = [
     "**/node_modules/**",
-    "**/lenovo/**",
+    "**/vendor/**",
     "**/packages/apps/**",
     "/aosp/test/suite_harness/common/host-side/util",
     "/aosp/sdk/testapps/userLibTest",
@@ -229,7 +229,7 @@ describe("matchesImportExclusion", () => {
   });
 
   it("matches simple **/seg/** globs by segment sequence", () => {
-    expect(matchesImportExclusion("/aosp/lenovo/lgsi/frameworks/base/core/java", entries)).toBe(true);
+    expect(matchesImportExclusion("/aosp/vendor/sample/frameworks/base/core/java", entries)).toBe(true);
     expect(matchesImportExclusion("/aosp/packages/apps/Calculator/src", entries)).toBe(true);
     // packages/modules must not match packages/apps
     expect(matchesImportExclusion("/aosp/packages/modules/Connectivity/service/src", entries)).toBe(false);
@@ -255,15 +255,15 @@ describe("scopedImportExclusions", () => {
 
   it("drops absolute entries covering a window folder (guard rootBlocked leftovers)", () => {
     const out = scopedImportExclusions(
-      ["**/lenovo/**", "/aosp/packages/modules/Connectivity", "/aosp/test/suite_harness/common/host-side/util"],
+      ["**/vendor/**", "/aosp/packages/modules/Connectivity", "/aosp/test/suite_harness/common/host-side/util"],
       folders
     );
-    expect(out).toEqual(["**/lenovo/**", "/aosp/test/suite_harness/common/host-side/util"]);
+    expect(out).toEqual(["**/vendor/**", "/aosp/test/suite_harness/common/host-side/util"]);
   });
 
   it("keeps everything when no folder is covered", () => {
-    const out = scopedImportExclusions(["**/lenovo/**", "/aosp/test/suite_harness"], folders);
-    expect(out).toEqual(["**/lenovo/**", "/aosp/test/suite_harness"]);
+    const out = scopedImportExclusions(["**/vendor/**", "/aosp/test/suite_harness"], folders);
+    expect(out).toEqual(["**/vendor/**", "/aosp/test/suite_harness"]);
   });
 });
 
