@@ -178,7 +178,7 @@ cp "$EXT/server/config_ss_linux/config.ini" "$GS/config_ss_linux/config.ini"
 
 ### Diagnostics 显示 `jdt.ls.vmargs ⚠`
 
-默认堆内存对注入列表太小 (参考树 780 个 jar / 约 330 MB 类)。用户 settings.json 加 `"java.jdt.ls.vmargs": "-Xmx8G ..."` 后重新加载。若插件报出 heap dump / `OutOfMemoryError` 证据, 请继续调大堆并考虑 `java.autobuild.enabled: false`——这两项设置插件都不会代写。
+默认堆内存对注入列表太小 (参考树 780 个 jar / 约 330 MB 类)。用户 settings.json 加 `"java.jdt.ls.vmargs": "-Xmx8G ..."` 后重新加载。若插件报出 heap dump / `OutOfMemoryError` 证据, 请继续调大堆——大 AOSP 根上插件已自动关闭 `java.autobuild.enabled` (见下), 但堆参数始终不由插件写入。
 
 ### 卡在 "Importing Gradle project(s)" / "Validating Gradle wrapper checksum"
 
@@ -192,6 +192,8 @@ AOSP 树内散落着少量 build.gradle (多见于测试目录)。插件会自�
 插件只会在任何层都没有显式值时写入, 因此你显式设的 `true` 不会被下次打开覆盖。
 
 注: 旧版插件还写过 `java.import.gradle.wrapper.checksums`——该 key 上游已改名(`java.imports.gradle.wrapper.checksums`), 且 gradle 导入禁用后本就无效; 插件已不再写入, settings 中的残留条目可删。
+
+**自动构建。** 当窗口的工作区文件夹**就是** AOSP 根、且注入列表不少于 300 个 jar 时, 插件会把 `java.autobuild.enabled: false` 写入 workspace 层, 不弹窗询问。这个规模下 Eclipse 每次保存都会重新校验整个 classpath, 是编辑期间主要的 CPU 开销。插件绝不覆盖任何层的显式值 (workspace / workspace folder / 用户), 也不会重复写自己写过的值, `AOSP: Reset Plugin Settings` 只移除这一条。子目录窗口与小工程完全不碰。`AOSP: Show Diagnostics` 会显示当前值及来源 (`set by aosp-nav` / 用户层 / `default (on)`)。
 
 ### 某个类型仍然解析不了
 

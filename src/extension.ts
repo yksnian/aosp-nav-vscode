@@ -11,7 +11,13 @@ import { CACHE_VERSION, filtersHash, isCacheValid, CacheFile } from "./core/cach
 import { scanJars, isDirectory, verifyJars, ScanCancelledError, DEFAULT_WALK_CONCURRENCY } from "./infra/fsScan";
 import type { JarVerifyResult } from "./infra/fsScan";
 import type { ScanStats, ScanResult } from "./core/types";
-import { applyReferencedLibraries, clearOwnWorkspaceLibs } from "./jdtls/settingsChannel";
+import {
+  applyReferencedLibraries,
+  clearOwnWorkspaceLibs,
+  currentAutobuildState,
+  ensureAutobuildDisabled,
+  clearOwnAutobuild,
+} from "./jdtls/settingsChannel";
 import { ensureJavaExtension } from "./jdtls/depManager";
 import { applyOnce as applyCompat, resetWritten } from "./jdtls/compat";
 import { apply as applyHygiene } from "./jdtls/workspaceHygiene";
@@ -374,6 +380,23 @@ export function activate(ctx: vscode.ExtensionContext): void {
         channel.appendLine(`[aosp-nav] ${root}: referencedLibraries not applied, will retry on next open`);
         return;
       }
+      // Large AOSP root: stop Eclipse from rebuilding on every save. Only when
+      // the workspace folder itself is the root (never a subtree window), only
+      // above the jar threshold, and never over an explicit user value — the
+      // policy lives in jdtls/autobuild.ts. A failed write must not stop the
+      // injection.
+      try {
+        const isRootFolder = (vscode.workspace.workspaceFolders ?? []).some(
+          (f) => f.uri.scheme === "file" && path.resolve(f.uri.fsPath) === path.resolve(root)
+        );
+        await ensureAutobuildDisabled(
+          ctx,
+          { workspaceIsAospRoot: isRootFolder, jars: jars.length },
+          (m) => channel.appendLine(m)
+        );
+      } catch (e) {
+        channel.appendLine(`[aosp-nav] autobuild check failed (ignored): ${e}`);
+      }
       if (res.changed) {
         // fresh write: show the one-time Eclipse index, but settle on its own
         // (this branch used to stay on "indexing" forever)
@@ -506,6 +529,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("aosp-nav.resetSettings", async () => {
       await resetWritten(ctx, (m) => channel.appendLine(m));
       await clearOwnWorkspaceLibs(ctx);
+      await clearOwnAutobuild(ctx);
       await clearOwnSourcePaths(ctx);
       await clearOwnExclusions(ctx);
       await clearKotlinChannel(ctx);
@@ -766,7 +790,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
               ok: false,
               label: "jdt.ls crash",
               detail: `${crash.evidence}${crash.oomSample ? ` — ${crash.oomSample}` : ""}`,
-              action: "raise java.jdt.ls.vmargs (e.g. -Xmx6G) and/or set java.autobuild.enabled=false; aosp-nav does not write these settings",
+              action: "raise java.jdt.ls.vmargs (e.g. -Xmx6G); aosp-nav disables java.autobuild.enabled on large AOSP roots automatically",
             }
           : {
               ok: true,
@@ -774,6 +798,23 @@ export function activate(ctx: vscode.ExtensionContext): void {
               detail: "no heap dump / OutOfMemoryError trace in the language-server workspace",
             }
       );
+      {
+        const ab = currentAutobuildState(ctx);
+        const origin =
+          ab.source === "plugin" ? "set by aosp-nav"
+          : ab.source === "user-workspace" ? "user workspace setting"
+          : ab.source === "user-workspace-folder" ? "user workspace-folder setting"
+          : ab.source === "user-global" ? "user global setting"
+          : "default (on)";
+        lines.push({
+          ok: ab.value === false ? true : null,
+          label: "java.autobuild.enabled",
+          detail: `${ab.value} (${origin})`,
+          action: ab.value
+            ? "left on: only a large AOSP root without an explicit value is changed"
+            : undefined,
+        });
+      }
       // eclipse guard
       const pending = await isCleanPending(ctx);
       const actionNeeded = getBlockedCount();

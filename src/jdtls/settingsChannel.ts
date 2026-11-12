@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import { decideAutobuild, autobuildState } from "./autobuild";
+import type { AutobuildInspect, AutobuildState } from "./autobuild";
 
 export interface ApplyResult {
   changed: boolean; // a write happened this call
@@ -11,6 +13,10 @@ export interface ApplyResult {
  *  writes when the user switches settingsScope to global — without ever
  *  touching a list the user authored themselves. */
 const OWN_WS_KEY = "aosp-nav.ownWorkspaceLibs";
+
+/** workspaceState flag: this plugin wrote java.autobuild.enabled=false to the
+ *  workspace layer, so Reset may remove exactly that value. */
+const OWN_AUTOBUILD_KEY = "aosp-nav.ownAutobuildDisabled";
 
 function includeOf(v: unknown): string[] {
   return Array.isArray(v) ? v : ((v as { include?: string[] } | undefined)?.include ?? []);
@@ -123,4 +129,67 @@ export async function clearOwnWorkspaceLibs(ctx: vscode.ExtensionContext): Promi
     await jc.update("project.referencedLibraries", undefined, vscode.ConfigurationTarget.Workspace);
   }
   await ctx.workspaceState.update(OWN_WS_KEY, undefined);
+}
+
+/** Value and origin of java.autobuild.enabled, for the diagnostics row. */
+export function currentAutobuildState(ctx: vscode.ExtensionContext): AutobuildState {
+  const ins = vscode.workspace.getConfiguration("java").inspect<boolean>("autobuild.enabled");
+  return autobuildState(ins as AutobuildInspect | undefined, ctx.workspaceState.get<boolean>(OWN_AUTOBUILD_KEY) === true);
+}
+
+/** Disable Eclipse autobuild for a large AOSP root, without asking and
+ *  without ever overriding an explicit user value.
+ *
+ *  - only the WORKSPACE layer is written;
+ *  - an explicit value in any layer (workspace / workspaceFolder / user)
+ *    wins, including an explicit `true`;
+ *  - the write is flagged in workspaceState so Reset can remove exactly this
+ *    value and nothing else;
+ *  - a failed write is logged and otherwise ignored (injection continues). */
+export async function ensureAutobuildDisabled(
+  ctx: vscode.ExtensionContext,
+  opts: { workspaceIsAospRoot: boolean; jars: number },
+  log: (msg: string) => void
+): Promise<void> {
+  const jc = vscode.workspace.getConfiguration("java");
+  const ins = jc.inspect<boolean>("autobuild.enabled");
+  const ours = ctx.workspaceState.get<boolean>(OWN_AUTOBUILD_KEY) === true;
+  const explicit =
+    ins?.workspaceValue !== undefined ||
+    ins?.workspaceFolderValue !== undefined ||
+    ins?.globalValue !== undefined;
+
+  const d = decideAutobuild({ workspaceIsAospRoot: opts.workspaceIsAospRoot, jars: opts.jars, explicit, ours });
+  if (!d.write) {
+    // stay quiet on ordinary projects; only explain a skip that involves our
+    // own previous write (so "why is autobuild still off after Reset" is visible)
+    if (ours) log(`[aosp-nav] java.autobuild.enabled stays disabled (${d.reason})`);
+    return;
+  }
+
+  try {
+    await jc.update("autobuild.enabled", false, vscode.ConfigurationTarget.Workspace);
+  } catch (e) {
+    log(`[aosp-nav] could not write java.autobuild.enabled (workspace): ${e} — injection continues`);
+    return;
+  }
+  await ctx.workspaceState.update(OWN_AUTOBUILD_KEY, true);
+  log(
+    `[aosp-nav] java.autobuild.enabled set to false in the workspace settings (${d.reason}): Eclipse would rebuild on every save at this size. Undo with "AOSP: Reset Plugin Settings".`
+  );
+}
+
+/** Remove the workspace-layer java.autobuild.enabled this extension wrote
+ *  (part of aosp-nav.resetSettings). A value the user changed afterwards is
+ *  left untouched. */
+export async function clearOwnAutobuild(ctx: vscode.ExtensionContext): Promise<void> {
+  if (ctx.workspaceState.get<boolean>(OWN_AUTOBUILD_KEY) !== true) return;
+  const jc = vscode.workspace.getConfiguration("java");
+  const ins = jc.inspect<boolean>("autobuild.enabled");
+  if (ins?.workspaceValue === false) {
+    try {
+      await jc.update("autobuild.enabled", undefined, vscode.ConfigurationTarget.Workspace);
+    } catch { /* best effort */ }
+  }
+  await ctx.workspaceState.update(OWN_AUTOBUILD_KEY, undefined);
 }

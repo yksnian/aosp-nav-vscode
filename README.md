@@ -173,7 +173,7 @@ cp "$EXT/server/config_ss_linux/config.ini" "$GS/config_ss_linux/config.ini"
 
 ### Diagnostics says `jdt.ls.vmargs ⚠`
 
-The default heap is too small for the injected list (780 jars / ~330 MB of classes on a reference tree). Add `"java.jdt.ls.vmargs": "-Xmx8G ..."` to user settings and reload. If the plugin reports heap-dump / `OutOfMemoryError` evidence, raise it further and consider `java.autobuild.enabled: false` — the plugin never writes either setting.
+The default heap is too small for the injected list (780 jars / ~330 MB of classes on a reference tree). Add `"java.jdt.ls.vmargs": "-Xmx8G ..."` to user settings and reload. If the plugin reports heap-dump / `OutOfMemoryError` evidence, raise it further — on a large AOSP root the plugin already disables `java.autobuild.enabled` (see below), but the heap itself is never written.
 
 ### Stuck at "Importing Gradle project(s)" / "Validating Gradle wrapper checksum"
 
@@ -187,6 +187,8 @@ A few `build.gradle` files are scattered in the AOSP tree (mostly in test direct
 The plugin only writes these when no layer has an explicit value, so an explicit `true` of yours is respected rather than overwritten on the next open.
 
 Note: older plugin versions also wrote `java.import.gradle.wrapper.checksums` — that key no longer exists upstream (renamed `java.imports.gradle.wrapper.checksums`) and was a no-op anyway once gradle import is disabled; it is no longer written and can be removed from settings.
+
+**Autobuild.** When the window's workspace folder *is* the AOSP root and the injected list has at least 300 jars, the plugin also writes `java.autobuild.enabled: false` to the workspace layer, without asking. At that size Eclipse re-validates the whole classpath on every save, which is the main CPU cost while editing. It never overrides an explicit value in any layer (workspace, workspace folder, user), never rewrites its own earlier value, and `AOSP: Reset Plugin Settings` removes exactly that entry. Sub-directory windows and small projects are never touched. `AOSP: Show Diagnostics` shows the current value and its origin (`set by aosp-nav`, a user layer, or `default (on)`).
 
 ### A type is still unresolvable
 
