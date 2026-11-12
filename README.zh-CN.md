@@ -13,7 +13,7 @@ Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java/Kotli
 aosp-nav 自动弥合这个鸿沟:
 
 1. **检测** —— 打开 AOSP 内任意 `.java` 文件, 插件从文件路径向上找到 AOSP 根 (在此之前完全静默);
-2. **选择** —— 扫描 `out/soong/.intermediates`, 每模块只保留一套必要产物, 排除整个桩家族, 并保证真身永远排在可疑产物之前;
+2. **选择** —— 按所选模块目录从 `out/soong/module_bp_java_deps.json` 计算依赖闭包, 并对每个模块做"已编译变体"回退: 注入几百个 jar, 不再整树遍历 `out/soong/.intermediates`。
 3. **注入** —— 将有序 jar 列表写入 `java.project.referencedLibraries`,应用 AOSP 兼容开关 (禁用 Gradle/Maven 导入器、排除 `out/`/`.repo/`), 并让文件监视/搜索避开庞大的 `out/` 树 (`files.watcherExclude`、`search.exclude`); 写入自动完成, 无需确认, 失败会在下次打开文件时自动重试;
 4. **护栏** —— eclipse guard 扫描 workspace 内含 `.project` 的遗留目录 (旧 jdtls/buildship 会话产物), 把它们排除出导入检测, 保证 jdt.ls 为你的目录创建 invisible project、`referencedLibraries` 真正生效 (见 FAQ);
 5. **缓存** —— 列表持久化, 由算法版本号或排除配置指纹自动失效。修改配置即生效, 无需手动清理。
@@ -47,7 +47,7 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 ## 安装与验证 (用户清单)
 
 1. 安装 `redhat.java` (扩展依赖)。C/C++ 需另外安装 `llvm-vs-code-extensions.vscode-clangd`——clangd 扩展不自带服务端。
-2. 在与 AOSP checkout 相同的环境里安装 VSIX。Remote-WSL 下在 WSL 终端执行 `code --install-extension aosp-nav-0.1.9.vsix`, 然后重载窗口。
+2. 在与 AOSP checkout 相同的环境里安装 VSIX。Remote-WSL 下在 WSL 终端执行 `code --install-extension aosp-nav-0.2.0.vsix`, 然后重载窗口。
 3. 把 AOSP checkout 作为 workspace 打开。多根窗口可用, 但同一窗口内所有 C/C++ 文件共用一份 `clangd.arguments`。
 4. **Java**: 打开任意 `.java`, 等状态栏变为 `$(check) AOSP:<n>`。模块选择弹窗在注入之前出现; 跳过则默认勾选 `frameworks/base/core/java` + `frameworks/base/services/core` 两个模块并注入其全部一级源码根 (AOSP 根窗口)。`sourcePaths` 会直接推送到运行中的语言服务器, 正常情况下无需重载; 只有当 jdt.ls 拒绝热更新时才会提示重载, 且同一份源码根列表只提示一次。
 5. **C/C++**: 把 `clangd.path` 指向 `<root>/prebuilts/clang/host/linux-x86/clang-r*/bin/clangd` (或接受首次打开时的建议)。打开一个 `.cpp`; 首个文件可能先用旧参数启动, 约 800 ms 去抖后重启一次 clangd, 之后复用。验证: 打开一个包含 `#include` 的 C/C++ 文件, 对文件内引用的符号按 F12 → 应落到源码树内的对应头文件。`AOSP: Show Diagnostics` 中 `cpp origin` 应显示 `compdb` 或 `cc_deps`。
@@ -122,19 +122,21 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 
 ## Jar 选择规则
 
-`out/soong/.intermediates` 下同一模块会产出多份 jar, 插件只保留导航所需的产物:
+注入的列表是**所选模块目录的依赖闭包**, 不再盲目遍历 `out/soong/.intermediates`:
 
-1. **变体**: `android_common` 首选; `android_common_apexNN` 兜底 (core-oj 等只有 apex 变体); host (`linux_glibc_common`) 与产品变体排除。
+1. **种子与边**: `path` 命中所选模块目录的所有模块为种子; 沿 `dependencies` + `libs` + `static_libs` 遍历。jar 取所达模块的 `jars` 条目, 仅当文件确实在磁盘上才接受 (只认树相对路径, 绝对路径与含 `..` 的路径拒绝)。
 
-2. **类型分桶**: `javac`/`kotlinc` (模块自身编译产物) **全保留**——混合 Java/Kotlin 模块两个目录各含一半类; `combined` (fat jar, 类重复主因) / `turbine*` (API 签名, 无方法体) 仅当模块无自身产物时兜底取一份。
+2. **公共集**: 恒加入 `core-oj` 与 `core-libart`。soong 把 bootclasspath 记为编译输入而非依赖边, 闭包永远走不到 libcore; 缺了它所有 `java.lang.*` 引用都会失联。
 
-3. **`.impl` 归一化**: `java_sdk_library` 的真实编译产物在 `<name>.impl` 子模块, 剥后缀参与去重。
+3. **变体回退**: 某模块在索引里登记的所有 jar 都不在磁盘时, 直接扫 `<模块>/out/soong/.intermediates/<path>/<name>/`: 变体目录按名字倒序 (`android_common_apexNN` 先于 `android_common`), 再按 `javac` > `combined` > `turbine-combined` 取。这能救回"索引登记了树里从未构建的变体"的模块——典型是索引给 turbine 头 jar 而树里只有 `javac` 产物。救回的模块计入 `rescued`, 其索引条目不再计入 `dropped`。
 
-4. **pre-jarjar 去重**: soong 会导出 `<name>-pre-jarjar` 独立模块 (改包名前的类, 与基模块同 FQN); 基模块有自身产物时丢弃, 孤立模块保留。
+4. **计数**: 每次扫描报 `jars`、`dropped` (回退后仍无文件的唯一 jar 条目数)、`rescued`、`unbuilt` (有 jar 候选但完全没编译的模块数)、`dangling` (构建索引里不存在的依赖名)。参考树: **774 jars / 333 MB**, 对照全量列表 1276 / 834 MB; dropped 986、rescued 527、unbuilt 280、dangling 5。
 
-5. **桩家族默认排除**: `*stubs*`、`*-stub` (sysprop-library-stub-* 等)、`*-headers` (framework-minus-apex-headers)、`^jrt-fs.jar$`、预构建 module SDK 桩 (`^prebuilts/sdk/sdk_`), 以及 R/lint/dex/srcjars/kapt jar。
+5. **回退绝不写空 classpath**: 没有模块选择、索引缺失/损坏、索引比 `build.ninja` 旧 (正在构建)、闭包为 0 个 jar——四种情况都保留上一份全量列表并记录原因; 日志会列出 dangling 模块名, 便于在模块选择器里手动勾选补回。
 
-6. **目录优先级排序**: `packages/modules/` > `frameworks/`、`libcore/`、… > `external/`、`tools/` > `prebuilts/` 与未知目录。classpath 有序且 JDT 按序取类——即使有漏网桩也永远排在真身之后。
+6. **诊断**: 诊断面板 `jar source` 行重复上述模式 (`closure`, 或 `full-list fallback` + 原因) 与计数; 输出通道每次扫描一行, `AOSP: Rescan` 完成时以通知形式给出同一份汇总。
+
+全量列表回退 (仅在闭包无法计算时使用) 仍沿用此前的产物规则——变体/类型分桶选择、`.impl` 归一化、pre-jarjar 去重、桩家族排除与目录优先级排序。
 
 ## Kotlin 支持 (实验性)
 
@@ -176,7 +178,7 @@ cp "$EXT/server/config_ss_linux/config.ini" "$GS/config_ss_linux/config.ini"
 
 ### Diagnostics 显示 `jdt.ls.vmargs ⚠`
 
-默认堆内存对 1000+ jar 太小。用户 settings.json 加 `"java.jdt.ls.vmargs": "-Xmx8G ..."` 后重新加载。
+默认堆内存对注入列表太小 (参考树 780 个 jar / 约 330 MB 类)。用户 settings.json 加 `"java.jdt.ls.vmargs": "-Xmx8G ..."` 后重新加载。若插件报出 heap dump / `OutOfMemoryError` 证据, 请继续调大堆并考虑 `java.autobuild.enabled: false`——这两项设置插件都不会代写。
 
 ### 卡在 "Importing Gradle project(s)" / "Validating Gradle wrapper checksum"
 
@@ -193,7 +195,7 @@ AOSP 树内散落着少量 build.gradle (多见于测试目录)。插件会自�
 
 ### 某个类型仍然解析不了
 
-运行 `AOSP: Show Diagnostics` 检查: root 检测到了吗? jar 数量正常 (~1200-1400)? `referencedLibraries` 同步了吗? 若是特定类缺失, 可能是其模块未被选中——在扩展 global storage 的 `jars-*.json` 缓存文件里搜该模块名, 连同 diagnostics 输出一起提 issue。
+运行 `AOSP: Show Diagnostics` 检查: root 检测到了吗? `jar source` 为 `closure` 且 jar 数为几百 (若是 `full-list fallback`, 该行会给出原因并显示约 1276)? `referencedLibraries` 同步了吗? 若是特定类缺失, 可能是其模块未被选中——查看 `dropped` / `dangling` 计数, 在扩展 global storage 的 `jars-*.json` 缓存文件里搜该模块名, 连同 diagnostics 输出一起提 issue。
 
 ### 修改排除配置后不生效
 

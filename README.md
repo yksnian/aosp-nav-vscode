@@ -13,7 +13,7 @@ Opening AOSP in VSCode with the Java extension alone gives you almost nothing: A
 aosp-nav bridges that gap automatically:
 
 1. **Detect** — open any `.java` file in an AOSP checkout; the plugin walks up from the file path to find the AOSP root (before that, it is fully silent).
-2. **Select** — scan `out/soong/.intermediates` and pick exactly one set of artifacts per module, excluding the whole API-stub zoo and ordering real implementations before anything suspicious.
+2. **Select** — compute the dependency closure of the selected module dirs from `out/soong/module_bp_java_deps.json`, with a built-variant fallback per module: a few hundred jars instead of the whole `out/soong/.intermediates` tree.
 3. **Inject** — write the ordered jar list to `java.project.referencedLibraries`, apply AOSP compatibility switches (disable Gradle/Maven importers, exclude `out/`/`.repo/` from import), and keep the file watcher/search away from the huge `out/` tree (`files.watcherExclude`, `search.exclude`). The write is automatic (no confirmation) and retried on the next file open if it fails.
 4. **Guard** — the eclipse guard scans the whole workspace for leftover `.project` markers (old jdtls/buildship sessions) and excludes every such directory from import detection, so jdt.ls keeps creating its invisible project and `referencedLibraries` actually applies (see FAQ).
 5. **Cache** — persist the list, auto-invalidated by algorithm version or exclusion-config fingerprint. Configuration changes just work.
@@ -47,7 +47,7 @@ Messages follow the VS Code display language: Chinese for zh-cn, English everywh
 ## Install & verify (user checklist)
 
 1. Install `redhat.java` (declared dependency). For C/C++ install `llvm-vs-code-extensions.vscode-clangd` separately — the clangd extension bundles no server.
-2. Install the VSIX in the same environment as the AOSP checkout. In Remote-WSL, run `code --install-extension aosp-nav-0.1.9.vsix` from the WSL terminal, then reload the window.
+2. Install the VSIX in the same environment as the AOSP checkout. In Remote-WSL, run `code --install-extension aosp-nav-0.2.0.vsix` from the WSL terminal, then reload the window.
 3. Open the AOSP checkout as a workspace folder. Multi-root windows work, but all C/C++ files in one window share a single `clangd.arguments`.
 4. **Java**: open any `.java` file and wait for `$(check) AOSP:<n>`. The module picker runs before injection; skipping it selects the default modules (`frameworks/base/core/java` + `frameworks/base/services/core` and all their first-party roots in an AOSP-root window). `sourcePaths` are pushed into the running language server, so no reload is normally needed — the reload prompt only appears if jdt.ls rejects the live update, once per distinct root list.
 5. **C/C++**: set `clangd.path` to `<root>/prebuilts/clang/host/linux-x86/clang-r*/bin/clangd` (or accept the first-open suggestion). Open a `.cpp`; the first file may start with old arguments and then restart clangd once after the 800 ms debounce. Later files reuse the server. Verify with F12 on a symbol referenced by an `#include` in a C/C++ file — it should resolve to the corresponding header in the source tree. `AOSP: Show Diagnostics` should report `cpp origin` as `compdb` or `cc_deps`.
@@ -122,14 +122,16 @@ Limitations:
 
 ## Jar selection rules
 
-`out/soong/.intermediates` produces multiple jars per module; the plugin keeps only what navigation needs:
+The injected list is the **dependency closure of the selected module dirs**, not a blind walk of `out/soong/.intermediates`:
 
-1. **Variant**: `android_common` preferred; `android_common_apexNN` as fallback (core-oj etc. only have apex variants); host (`linux_glibc_common`) and product variants excluded.
-2. **Type buckets**: `javac`/`kotlinc` (module's own compiled sources) are **always kept** — mixed Java/Kotlin modules have both directories, each holding half the classes. `combined` (fat jar, main source of duplicate classes) / `turbine*` (API signatures, no method bodies) only as fallback when a module has no own-source artifacts.
-3. **`.impl` normalization**: the real compilation of a `java_sdk_library` lives in `<name>.impl`; the suffix is stripped for dedup.
-4. **pre-jarjar dedup**: soong exports `<name>-pre-jarjar` modules with pre-rename classes sharing FQNs with the base module; dropped when the base module has its own artifact, kept as orphans otherwise.
-5. **Stub families excluded by default**: `*stubs*`, `*-stub` (sysprop-library-stub-*), `*-headers` (framework-minus-apex-headers), `^jrt-fs.jar$`, prebuilt module-SDK stubs (`^prebuilts/sdk/sdk_`), plus R/lint/dex/srcjars/kapt jars.
-6. **Directory-priority ordering**: `packages/modules/` > `frameworks/`, `libcore/`, ... > `external/`, `tools/` > `prebuilts/` & unknown. The classpath is ordered and JDT takes the first hit, so even an unnoticed stub always sorts behind its real implementation.
+1. **Seeds and edges** — every module whose `path` is one of the selected module dirs; the walk follows `dependencies` + `libs` + `static_libs`. Jars are the `jars` entries of every module reached, accepted only when the file exists on disk (tree-relative paths; absolute and `..` paths are rejected).
+2. **Common set** — `core-oj` and `core-libart` are always added. soong records the bootclasspath as a compile input, not as a dependency edge, so the walk never reaches libcore and every `java.lang.*` reference would dangle without it.
+3. **Variant fallback** — when *every* jar the index lists for a module is missing on disk, the module's `out/soong/.intermediates/<path>/<name>/` directory is scanned: variant dirs in descending name order (`android_common_apexNN` before `android_common`), then `javac` > `combined` > `turbine-combined`. This recovers modules whose index entry names a variant the tree never built — typically a turbine header jar while the `javac` output exists. Recovered modules are reported as `rescued` and their index entries are not counted as `dropped`.
+4. **Counts** — one scan reports `jars`, `dropped` (unique jar entries with no file on disk even after the fallback), `rescued`, `unbuilt` (modules with jar candidates but nothing built) and `dangling` (dependency names absent from the build index). Reference tree: **774 jars / 333 MB** versus 1276 / 834 MB for the full list; dropped 986, rescued 527, unbuilt 280, dangling 5.
+5. **Fallbacks never empty the classpath** — no module selection, a missing/invalid index, an index older than `build.ninja` (a build is running), or a zero-jar closure all keep the previous full list and log the reason. The log names the dangling modules so you can add them via the module picker.
+6. **Diagnostics** — the `jar source` row repeats the mode (`closure`, or `full-list fallback` plus the reason) and the counts above; the output channel has one line per scan and `AOSP: Rescan` shows the same summary as a notification.
+
+The full-list fallback (used only when the closure cannot be computed) keeps the earlier artifact rules — variant/bucket selection, `.impl` normalization, pre-jarjar dedup, stub-family exclusion and directory-priority ordering.
 
 ## Kotlin support (experimental)
 
@@ -171,7 +173,7 @@ cp "$EXT/server/config_ss_linux/config.ini" "$GS/config_ss_linux/config.ini"
 
 ### Diagnostics says `jdt.ls.vmargs ⚠`
 
-The default heap is too small for 1000+ jars. Add `"java.jdt.ls.vmargs": "-Xmx8G ..."` to user settings and reload.
+The default heap is too small for the injected list (780 jars / ~330 MB of classes on a reference tree). Add `"java.jdt.ls.vmargs": "-Xmx8G ..."` to user settings and reload. If the plugin reports heap-dump / `OutOfMemoryError` evidence, raise it further and consider `java.autobuild.enabled: false` — the plugin never writes either setting.
 
 ### Stuck at "Importing Gradle project(s)" / "Validating Gradle wrapper checksum"
 
@@ -188,7 +190,7 @@ Note: older plugin versions also wrote `java.import.gradle.wrapper.checksums` �
 
 ### A type is still unresolvable
 
-Run `AOSP: Show Diagnostics` and check: root detected? jar count sane (~1200–1400)? `referencedLibraries` in sync? If a specific class is missing, it may be a generated-only type whose module wasn't selected — search the module name in the cache file (`jars-*.json` under the extension's global storage) and report an issue with the diagnostics output.
+Run `AOSP: Show Diagnostics` and check: root detected? `jar source` reports `closure` with a few hundred jars (a `full-list fallback` line names the reason and shows ~1276)? `referencedLibraries` in sync? If a specific class is missing, it may be a generated-only type whose module wasn't selected — check the `dropped` / `dangling` counts, search the module name in the cache file (`jars-*.json` under the extension's global storage), and report an issue with the diagnostics output.
 
 ### Changing exclusion settings doesn't take effect
 
