@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
-import { loadJavaModuleIndex } from "./moduleRoots";
+import { autoModulesForFolder, loadJavaModuleIndex, scopedImportExclusions } from "./moduleRoots";
+import type { JavaModuleIndex } from "./moduleRoots";
 import { closureJars } from "./closure";
 
 /** Plan D jar list for jdt.ls / Kotlin injection: the dependency closure of the
@@ -15,11 +16,14 @@ import { closureJars } from "./closure";
  *  BFS never reaches libcore. Without `core-oj`/`core-libart` every
  *  `java.lang.*`/`java.util.*` reference is unresolved. They are looked up by
  *  module name in the index (robust across trees) rather than hardcoded paths.
- *  No other entries: framework-minus-apex and the stubs are already inside the
- *  closure, and anything else missing is reported via `unmapped`/`starved`
- *  instead of guessed. */
+ *  `framework-annotations-lib` is the third entry: `android.annotation.NonNull`
+ *  /`Nullable` are not in libcore (verified: 0 entries under android/annotation
+ *  in core-oj/core-libart) and framework.jar is a bootclasspath input, so
+ *  windows whose dependency graph does not statically link the annotations
+ *  library lose those imports. It is the official 65 KB / 138-entry library,
+ *  not the 40-50 MB framework stub. */
 
-export const COMMON_MODULES = ["core-oj", "core-libart"];
+export const COMMON_MODULES = ["core-oj", "core-libart", "framework-annotations-lib"];
 
 /** log cap for the unmapped module list (full list stays in the result) */
 const UNMAPPED_LOG_LIMIT = 40;
@@ -37,6 +41,8 @@ interface ClosureCacheEntry {
   unknownSeeds: string[];
   missingCommon: string[];
   visited: number;
+  /** modules auto-selected for a subtree window (null for an explicit pick) */
+  auto: number | null;
 }
 
 const CLOSURE_CACHE_LIMIT = 6;
@@ -94,6 +100,21 @@ export interface JarPlanResult {
   missingCommon: string[];
   /** modules visited by the closure traversal (informational) */
   visited: number;
+  /** modules auto-selected for a subtree window (absent when the selection was
+   *  explicit or the plan fell back) */
+  auto?: number;
+}
+
+/** Options for windows that have no explicit module selection.
+ *  A subtree window (folder !== root) uses the same auto module selection as
+ *  the java.project.sourcePaths channel, so both channels describe the same
+ *  modules instead of one scoping sources and the other injecting every jar. */
+export interface JarPlanOptions {
+  /** the workspace folder these jars are for (absolute) */
+  folder?: string;
+  /** java.import.exclusions of the active window, same entries the source-path
+   *  channel scopes */
+  importExclusions?: readonly string[];
 }
 
 function fallback(
@@ -101,7 +122,7 @@ function fallback(
   reason: string,
   log: (m: string) => void
 ): JarPlanResult {
-  log(`[aosp-nav] jarPlan: ${reason} — falling back to the full jar list (${fullJars.length} jars)`);
+  log(`[aosp-nav] jarPlan: full-list fallback (${reason}) — ${fullJars.length} jars`);
   return {
     jars: [...fullJars],
     mode: "fallback",
@@ -120,10 +141,15 @@ export async function computeInjectedJars(
   root: string,
   selectedModuleDirs: readonly string[],
   fullJars: readonly string[],
-  log: (m: string) => void
+  log: (m: string) => void,
+  opts: JarPlanOptions = {}
 ): Promise<JarPlanResult> {
-  const seeds = [...new Set(selectedModuleDirs.map((s) => s.trim()).filter(Boolean))];
-  if (seeds.length === 0) return fallback(fullJars, "no module selection", log);
+  let seeds = [...new Set(selectedModuleDirs.map((s) => s.trim()).filter(Boolean))];
+  /** modules auto-selected for this window folder (null: explicit selection) */
+  let auto: number | null = null;
+  if (seeds.length === 0 && (!opts.folder || path.resolve(opts.folder) === path.resolve(root))) {
+    return fallback(fullJars, "no module selection", log);
+  }
 
   const depsFile = path.join(root, "out", "soong", "module_bp_java_deps.json");
 
@@ -144,6 +170,27 @@ export async function computeInjectedJars(
   ]);
   if (depsM !== null && ninjaM !== null && ninjaM > depsM) {
     return fallback(fullJars, "module index is older than the last build", log);
+  }
+
+  // Subtree window (Connectivity, NetworkStack, ...) with no explicit
+  // selection: derive the module dirs exactly like the source-path channel
+  // (autoModulesForFolder + the same scoped import exclusions), so the two
+  // channels scope the same modules. Still empty ⇒ full-list fallback.
+  let index: JavaModuleIndex | null = null;
+  if (seeds.length === 0) {
+    index = await loadJavaModuleIndex(root, log);
+    if (!index) {
+      return fallback(fullJars, "no module selection and the build index is unavailable", log);
+    }
+    const scopedExcl = scopedImportExclusions(opts.importExclusions ?? [], [opts.folder!]);
+    seeds = [...new Set(autoModulesForFolder(index, root, opts.folder!, scopedExcl))];
+    if (seeds.length === 0) {
+      return fallback(fullJars, "no module selection and no module dirs under the window folder", log);
+    }
+    auto = seeds.length;
+    log(
+      `[aosp-nav] jarPlan: no explicit selection — auto-selected ${auto} module(s) under the window folder (same rule as java.project.sourcePaths)`
+    );
   }
 
   // disk check with a memo: the same jar is listed by many modules
@@ -185,12 +232,13 @@ export async function computeInjectedJars(
         unknownSeeds: cached.unknownSeeds,
         missingCommon: cached.missingCommon,
         visited: cached.visited,
+        auto: cached.auto ?? undefined,
       };
     }
     closureCache.delete(cacheKey);
   }
 
-  const index = await loadJavaModuleIndex(root, log);
+  if (!index) index = await loadJavaModuleIndex(root, log);
   if (!index) return fallback(fullJars, `${depsFile} not found or not valid JSON`, log);
 
   const r = await closureJars(index, seeds, {
@@ -239,7 +287,11 @@ export async function computeInjectedJars(
   if (allRel.length === 0) return fallback(fullJars, "closure produced 0 existing jars", log);
 
   const rescued = r.rescued + commonRescued.length;
-  log(`[aosp-nav] jarPlan: closure of ${seeds.length} module dir(s) = ${allRel.length} jars (${r.visited} modules visited, ${r.dropped} dropped, ${rescued} rescued by variant fallback)`);
+  const label =
+    auto === null
+      ? `closure of ${seeds.length} module dir(s)`
+      : `closure (auto ${auto} module(s) for this folder)`;
+  log(`[aosp-nav] jarPlan: ${label} = ${allRel.length} jars (${r.visited} modules visited, ${r.dropped} dropped, ${rescued} rescued by variant fallback)`);
   closureCache.set(cacheKey, {
     relJars: allRel,
     unmapped: r.unmapped,
@@ -249,6 +301,7 @@ export async function computeInjectedJars(
     unknownSeeds: r.unknownSeeds,
     missingCommon: r.missingCommon,
     visited: r.visited,
+    auto,
   });
   if (closureCache.size > CLOSURE_CACHE_LIMIT) {
     closureCache.delete(closureCache.keys().next().value!);
@@ -263,5 +316,6 @@ export async function computeInjectedJars(
     unknownSeeds: r.unknownSeeds,
     missingCommon: r.missingCommon,
     visited: r.visited,
+    auto: auto ?? undefined,
   };
 }

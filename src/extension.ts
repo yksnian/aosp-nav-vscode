@@ -75,6 +75,8 @@ interface SessionMeta {
     rescued: number;
     /** unique jar entries the closure dropped (missing on disk / off-tree) */
     dropped: number;
+    /** modules auto-selected for a subtree window (absent when explicit) */
+    auto?: number;
   };
 }
 
@@ -345,11 +347,25 @@ export function activate(ctx: vscode.ExtensionContext): void {
       // selection is empty, so the injected classpath can never silently go
       // empty. The selection is re-read here (not from the cfg snapshot
       // above): seedDefaultModuleSelection may have just written it.
+      // Subtree windows (Connectivity, NetworkStack, ...) never seed a module
+      // selection, so hand jarPlan the window folder: it then derives the same
+      // auto module set the source-path channel uses, instead of injecting the
+      // full list. A window folder equal to the root keeps the old behaviour.
+      const windowFolder = (vscode.workspace.workspaceFolders ?? [])
+        .filter((f) => f.uri.scheme === "file")
+        .map((f) => f.uri.fsPath)
+        .find((p) => {
+          const rel = path.relative(path.resolve(root), path.resolve(p));
+          return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+        });
+      const jInsp = vscode.workspace.getConfiguration("java").inspect<string[]>("import.exclusions");
+      const importExclusions = jInsp?.workspaceValue ?? jInsp?.globalValue ?? jInsp?.defaultValue ?? [];
       const plan = await computeInjectedJars(
         root,
         vscode.workspace.getConfiguration("aosp-nav").get<string[]>("java.sourceRootModules") ?? [],
         jars,
-        (m) => channel.appendLine(m)
+        (m) => channel.appendLine(m),
+        { folder: windowFolder, importExclusions }
       );
       jars = plan.jars;
       s.jars = jars;
@@ -361,6 +377,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
           starved: plan.starved,
           rescued: plan.rescued,
           dropped: plan.dropped,
+          auto: plan.auto,
         };
       }
       // kotlin channel: same jar list, fed to fwcd kotlin-language-server
@@ -627,7 +644,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
             ok: m.jarSource.mode === "closure" ? true : null,
             label: "jar source",
             detail: m.jarSource.mode === "closure"
-              ? `closure of the selected module dirs + libcore common set: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.rescued} rescued by variant fallback, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt; see log)`
+              ? `closure${m.jarSource.auto ? ` (auto ${m.jarSource.auto} module(s) for this folder)` : " of the selected module dirs"} + libcore common set: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.rescued} rescued by variant fallback, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt; see log)`
               : `full-list fallback (${m.jarSource.reason ?? "unspecified"})`,
           });
         }
@@ -656,7 +673,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       lines.push({
         ok: sp.length > 0 ? true : null,
         label: "sourcePaths",
-        detail: `${sp.length} entries (${ownSourcePaths(ctx).length} managed by aosp-nav; reload required after changes)`,
+        detail: `${sp.length} entries (${ownSourcePaths(ctx).length} managed by aosp-nav; live-synced to the running session, reload only if the server rejects the change)`,
       });
       // A configured source root outside every workspace folder cannot be
       // injected: jdt.ls only takes workspace-relative paths. Say so and give
@@ -710,12 +727,15 @@ export function activate(ctx: vscode.ExtensionContext): void {
         const cs = await cppStatus(ctx, root);
         const cand = root ? await findAospClangd(root) : null;
         lines.push({
-          ok: cs.origin === "none" ? null : true,
+          // healthy = clangd actually consumes the CDB. cc_deps entries are
+          // inert without --compile-commands-dir, so a managed CDB that is not
+          // wired stays neutral (null), never a red row.
+          ok: cs.origin === "none" ? null : cs.origin === "compdb" || cs.hasCdbFlag ? true : null,
           label: "cpp origin",
           detail: cs.origin === "compdb"
             ? "compdb (clangd native, no entries written)"
             : cs.origin === "cc_deps"
-              ? `cc_deps, ${cs.entries} entr(ies)${cs.module ? `, last module ${cs.module}` : ""}`
+              ? `cc_deps, ${cs.entries} entr(ies)${cs.module ? `, last module ${cs.module}` : ""}${cs.hasCdbFlag ? "" : " — managed CDB not wired (missing --compile-commands-dir in clangd.arguments)"}`
               : cs.origin === "bp"
                 ? `Android.bp fallback, ${cs.entries} entr(ies)`
                 : "none (no compdb / module_bp_cc_deps.json / Android.bp)",

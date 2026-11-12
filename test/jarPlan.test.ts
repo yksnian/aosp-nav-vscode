@@ -219,4 +219,63 @@ describe("computeInjectedJars", () => {
     expect(logs.some((l) => l.includes("not on disk yet"))).toBe(true);
     expect(logs.some((l) => l.includes("notbuilt"))).toBe(false);
   });
+
+  it("auto-selects the modules under a subtree window folder", async () => {
+    const root = await makeRoot(
+      {
+        conn: {
+          path: ["packages/modules/Connectivity/framework"],
+          srcs: ["packages/modules/Connectivity/framework/src/example/A.java"],
+          jars: ["out/j/a.jar"],
+          dependencies: ["lib"],
+        },
+        lib: { path: ["p"], srcs: ["p/src/example/B.java"], jars: ["out/j/b.jar"] },
+        wifi: {
+          path: ["packages/modules/Wifi/framework"],
+          srcs: ["packages/modules/Wifi/framework/src/example/C.java"],
+          jars: ["out/j/c.jar"],
+        },
+      },
+      ["out/j/a.jar", "out/j/b.jar", "out/j/c.jar"]
+    );
+    const logs: string[] = [];
+    const r = await computeInjectedJars(
+      root,
+      [],
+      FULL,
+      (m) => logs.push(m),
+      { folder: path.join(root, "packages/modules/Connectivity") }
+    );
+    expect(r.mode).toBe("closure");
+    expect(r.auto).toBe(1);
+    expect(r.jars).toEqual([path.join(root, "out/j/a.jar"), path.join(root, "out/j/b.jar")]);
+    expect(logs.some((l) => l.includes("auto-selected 1 module(s)"))).toBe(true);
+    expect(logs.some((l) => l.includes("closure (auto 1 module(s) for this folder)"))).toBe(true);
+  });
+
+  it("falls back when the subtree folder holds no java module", async () => {
+    const root = await makeRoot(
+      { app: { path: ["packages/modules/Connectivity/framework"], srcs: ["src"], jars: ["out/j/a.jar"] } },
+      ["out/j/a.jar"]
+    );
+    const r = await computeInjectedJars(
+      root,
+      [],
+      FULL,
+      NOOP,
+      { folder: path.join(root, "packages/modules/Telephony") }
+    );
+    expect(r.mode).toBe("fallback");
+    expect(r.reason).toContain("no module dirs under the window folder");
+  });
+
+  it("keeps the root window on the explicit selection", async () => {
+    const root = await makeRoot(
+      { app: { path: ["frameworks/base/core/java"], srcs: ["src"], jars: ["out/j/a.jar"] } },
+      ["out/j/a.jar"]
+    );
+    const r = await computeInjectedJars(root, [], FULL, NOOP, { folder: root });
+    expect(r.mode).toBe("fallback");
+    expect(r.reason).toBe("no module selection");
+  });
 });

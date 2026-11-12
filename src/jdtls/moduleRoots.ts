@@ -317,6 +317,9 @@ export function autoModulesForFolder(
 ): string[] {
   const rootWindow = path.relative(aospRoot, folder) === "";
   const out: string[] = [];
+  /** module dirs equal to the window folder: used only by the degenerate-case
+   *  fallback below (frameworks/base/services/core) */
+  const atFolder: string[] = [];
   for (const dirRel of index.byPath.keys()) {
     if (
       importExclusions.length > 0 &&
@@ -324,12 +327,14 @@ export function autoModulesForFolder(
     ) {
       continue;
     }
+    let atRootOfWindow = false;
     if (rootWindow) {
       if (!(dirRel === FB_BASE || dirRel.startsWith(FB_BASE + "/"))) continue;
       if (dirRel.split("/").some((s) => ROOT_WINDOW_EXTRA_EXCLUDE.has(s))) continue;
     } else {
       const rel = path.relative(folder, path.join(aospRoot, dirRel));
-      if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) continue;
+      if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
+      atRootOfWindow = rel === "";
     }
     if (dirRel.split("/").some(isAutoExcludedSegment)) continue;
     const r = rootsForPath(index, dirRel);
@@ -338,9 +343,20 @@ export function autoModulesForFolder(
       if (rootWindow && !rel.startsWith(FB_BASE + "/")) return false;
       const abs = path.join(aospRoot, rel);
       const wrel = path.relative(folder, abs);
-      return wrel !== "" && !wrel.startsWith("..") && !path.isAbsolute(wrel);
+      return !wrel.startsWith("..") && !path.isAbsolute(wrel);
     });
-    if (usable) out.push(dirRel);
+    if (!usable) continue;
+    if (atRootOfWindow) atFolder.push(dirRel);
+    else out.push(dirRel);
   }
+  // Degenerate window (frameworks/base/services/core): everything below the
+  // folder is source-only (aconfig flag libs, *-sources stubs) and produces no
+  // jar, while the compiled module is declared AT the folder. Returning the
+  // jar-less selection would collapse the classpath to the libcore rescue jars
+  // (2 jars), so only then fall back to the modules declared at the folder.
+  const anyBuiltJar = out.some((dir) =>
+    (index.byPath.get(dir) ?? []).some((n) => (index.byName.get(n)?.jars.length ?? 0) > 0)
+  );
+  if (!anyBuiltJar && atFolder.length > 0) out.push(...atFolder);
   return out.sort();
 }

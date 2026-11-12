@@ -210,6 +210,32 @@ describe("autoModulesForFolder", () => {
   it("unknown folder: nothing auto-selected", () => {
     expect(autoModulesForFolder(idx, aosp, "/somewhere/else")).toEqual([]);
   });
+
+  it("includes a module declared exactly at the window folder", () => {
+    // services/core: the compiled module's path IS the window folder, while the
+    // only source-only module below it produces no jars. Skipping the equal dir
+    // used to leave the closure with the source-only module alone.
+    const idx2 = index({
+      "services.core.unboosted": {
+        path: "frameworks/base/services/core",
+        srcs: ["frameworks/base/services/core/java/com/android/server/pm/P.java"],
+        jars: ["out/j/services.jar"],
+        dependencies: ["lib"],
+      },
+      "framework-pm-service-sources": {
+        path: "frameworks/base/services/core/java/com/android/server/pm",
+        srcs: ["frameworks/base/services/core/java/com/android/server/pm/Q.java"],
+      },
+      lib: {
+        path: "frameworks/libs/x",
+        srcs: ["frameworks/libs/x/java/L.java"],
+        jars: ["out/j/lib.jar"],
+      },
+    });
+    const mods = autoModulesForFolder(idx2, aosp, aosp + "/frameworks/base/services/core");
+    expect(mods).toContain("frameworks/base/services/core");
+    expect(mods).toContain("frameworks/base/services/core/java/com/android/server/pm");
+  });
 });
 
 describe("matchesImportExclusion", () => {
