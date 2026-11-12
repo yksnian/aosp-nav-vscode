@@ -16,8 +16,18 @@ import { ensureJavaExtension } from "./jdtls/depManager";
 import { applyOnce as applyCompat, resetWritten } from "./jdtls/compat";
 import { apply as applyHygiene } from "./jdtls/workspaceHygiene";
 import { guardWorkspace, cleanAndReload, clearOwnExclusions, getLastReports, getBlockedCount, isCleanPending } from "./jdtls/eclipseGuard";
-import { applySourceRoots, clearOwnSourcePaths, ownSourcePaths } from "./jdtls/sourceRoots";
+import {
+  applySourceRootsAndPromptReload,
+  clearOwnSourcePaths,
+  ownSourcePaths,
+} from "./jdtls/sourceRoots";
 import { resolveSourceRoots } from "./jdtls/sourceRootsPlan";
+import {
+  maybeOfferModulePicker,
+  seedDefaultModuleSelection,
+  selectJavaSourceRootsByModule,
+} from "./jdtls/modulePicker";
+import { computeInjectedJars } from "./jdtls/jarPlan";
 import { applyKotlinClasspath, probeKotlinChannel, clearKotlinChannel, pruneKotlinRootMap } from "./kotlin/classpathChannel";
 import { ensureKotlinExtension } from "./kotlin/depManager";
 import {
@@ -44,6 +54,18 @@ interface SessionMeta {
   dirs?: number;
   stats?: ScanStats;
   verify?: JarVerifyResult;
+  /** how the injected jar list was produced (plan D: dependency closure of the
+   *  selected modules ∪ libcore, or the full-list fallback with its reason) */
+  jarSource?: {
+    mode: "closure" | "fallback";
+    reason?: string;
+    /** module names reached but absent from the build index */
+    unmapped: number;
+    /** modules whose jars are not built yet */
+    starved: number;
+    /** unique jar entries the closure dropped (missing on disk / off-tree) */
+    dropped: number;
+  };
 }
 
 const sessions = new Map<string, { phase: "idle" | "scanning" | "ready" | "failed"; jars: string[]; meta?: SessionMeta }>();
@@ -61,10 +83,6 @@ const MAX_CONCURRENT_SCANS = 2;
 let activeScans = 0;
 /** Roots that already got the one-time "first Eclipse index" notice. */
 const firstIndexNotified = new Set<string>();
-/** One reload prompt per extension-host session; sourcePaths only change when
- *  the configured list does, and the prompt would otherwise repeat on every
- *  scan. */
-let sourceReloadNotified = false;
 
 const SOONG_BASES = ["out/soong/.intermediates", "out/.soong/.intermediates"];
 /** Delay before the Eclipse-metadata guard walks the tree. The walk reads every
@@ -249,7 +267,6 @@ export function activate(ctx: vscode.ExtensionContext): void {
         await fs.rename(tmp, cacheFile);
       }
 
-      s.jars = jars;
       s.meta = {
         at: new Date().toISOString(),
         source: fromCache ? "cache" : "scan",
@@ -257,6 +274,44 @@ export function activate(ctx: vscode.ExtensionContext): void {
         stats,
         verify,
       };
+      // one-time module picker offer BEFORE injecting anything: injecting
+      // sourcePaths turns off jdt.ls' per-file source inference, so the choice
+      // must exist before the roots are written — and before the jar pass, so
+      // a pick made afterwards cannot trigger a second index run via the
+      // config-change listener on an already-injected session. Dismissing it
+      // is fine: the root-window default is then persisted as a real module
+      // selection.
+      await maybeOfferModulePicker(ctx, root, (m) => channel.appendLine(m));
+      // no implicit "default roots" branch any more: the root-window default
+      // modules are written to aosp-nav.java.sourceRootModules, so the picker's
+      // checked state and the injected roots always come from the same config.
+      // Runs while the session is still "scanning", so the config-change
+      // listener skips this root and no duplicate pass is scheduled.
+      await seedDefaultModuleSelection(root, (m) => channel.appendLine(m));
+      // Plan D jar source: the dependency closure of the selected modules ∪ a
+      // small common set (libcore), from the soong build index — instead of
+      // the full .intermediates walk. The full list stays in the cache and
+      // remains the fallback whenever the index is missing/stale or the
+      // selection is empty, so the injected classpath can never silently go
+      // empty. The selection is re-read here (not from the cfg snapshot
+      // above): seedDefaultModuleSelection may have just written it.
+      const plan = await computeInjectedJars(
+        root,
+        vscode.workspace.getConfiguration("aosp-nav").get<string[]>("java.sourceRootModules") ?? [],
+        jars,
+        (m) => channel.appendLine(m)
+      );
+      jars = plan.jars;
+      s.jars = jars;
+      if (s.meta) {
+        s.meta.jarSource = {
+          mode: plan.mode,
+          reason: plan.reason,
+          unmapped: plan.unmapped.length,
+          starved: plan.starved,
+          dropped: plan.dropped,
+        };
+      }
       // kotlin channel: same jar list, fed to fwcd kotlin-language-server
       // via its global classpath script (independent of the java write
       // below, so a java settings failure does not kill kotlin nav)
@@ -292,32 +347,18 @@ export function activate(ctx: vscode.ExtensionContext): void {
       }
       s.phase = "ready";
       // java.project.sourcePaths: real .java sources ahead of the decompiled
-      // jars. jdt.ls reads this during import, so the change only takes effect
-      // after a window reload. Never probe java.project.getAll/getClasspaths
+      // jars. jdt.ls picks the change up live (import already ran), so no
+      // window reload is required; the helper only reminds in the rare case
+      // the live sync could not run. Never probe java.project.getAll/getClasspaths
       // here or in diagnostics: those block for minutes on a real AOSP tree.
-      try {
-        const sp = await applySourceRoots(ctx, cfg.javaSourceRoots, (m) => channel.appendLine(m));
-        if (sp.changed && !sourceReloadNotified) {
-          sourceReloadNotified = true;
-          const button = vscode.l10n.t("Reload Window");
-          void vscode.window.showInformationMessage(
-            vscode.l10n.t(
-              "[aosp-nav] java.project.sourcePaths updated ({0} entries). Reload the window so jdt.ls picks them up; go-to-definition then lands in .java sources for the listed roots (modules not listed keep jar navigation only).",
-              sp.written
-            ),
-            button
-          ).then((pick) => {
-            if (pick === button) void vscode.commands.executeCommand("workbench.action.reloadWindow");
-          });
-        }
-      } catch (e) {
-        channel.appendLine(`[aosp-nav] sourcePaths: ${e}`);
-      }
+      // The module selection (and the seed written above) is already in the
+      // config by the time this runs.
+      await applySourceRootsAndPromptReload(ctx, (m) => channel.appendLine(m));
       const verifyNote = verify
-        ? `, verified ${verify.checked} jar(s)${verify.sampled ? " (sampled)" : ""}, ${verify.missing} missing`
+        ? `, cache verified ${verify.checked} jar(s)${verify.sampled ? " (sampled)" : ""}, ${verify.missing} missing`
         : "";
       channel.appendLine(
-        `[aosp-nav] ${root}: ${jars.length} jars (${fromCache ? "cache" : "scan"}${verifyNote}) in ${Date.now() - startedAt} ms`
+        `[aosp-nav] ${root}: injecting ${jars.length} jar(s) [${plan.mode}] from the ${fromCache ? "cached" : "scanned"} full list${plan.mode === "closure" ? ` (${plan.dropped} dropped, ${plan.unmapped.length} dangling)` : ""}${verifyNote} in ${Date.now() - startedAt} ms`
       );
     } catch (e) {
       status.statusFailed(root);
@@ -372,16 +413,37 @@ export function activate(ctx: vscode.ExtensionContext): void {
         { location: vscode.ProgressLocation.Window, title: "AOSP: rescanning" },
         async () => {
           await runFor(root);
-          // re-run the eclipse guard too: the user may have cleaned stale
-          // metadata dirs manually since the last scan
-          await guardWorkspace(ctx, (m) => channel.appendLine(m));
+          // Force a fresh walk: the user may have deleted stale .project dirs
+          // manually since the last scan, and an unexpired cached report would
+          // write those exclusions straight back. Rescan is the explicit
+          // "trust the disk now" path, so it must skip the 24 h cache.
+          await guardWorkspace(ctx, (m) => channel.appendLine(m), { force: true });
         });
+      // summarize what the rescan actually injected, so a closure fallback or a
+      // module set that lost jars is visible without opening the output channel
+      const s = sessions.get(root);
+      const js = s?.meta?.jarSource;
+      if (s && js) {
+        const msg = js.mode === "closure"
+          ? vscode.l10n.t(
+              "[aosp-nav] {0} jars injected (closure: {1} dropped, {2} dangling, {3} unbuilt)",
+              s.jars.length, js.dropped, js.unmapped, js.starved
+            )
+          : vscode.l10n.t(
+              "[aosp-nav] {0} jars injected (full-list fallback: {1})",
+              s.jars.length, js.reason ?? "unspecified"
+            );
+        channel.appendLine(`[aosp-nav] rescan: ${msg}`);
+        void vscode.window.showInformationMessage(msg);
+      } else {
+        channel.appendLine(`[aosp-nav] rescan: no session for ${root}`);
+      }
     }),
     vscode.commands.registerCommand("aosp-nav.fixEclipseBlockers", async () => {
       // physical dirs keep existing after a successful fix, so this stays
       // runnable whenever any are on disk — it is the escape hatch for "I
       // dismissed the confirmation earlier" / "navigation is still broken".
-      const physical = getLastReports().reduce((a, r) => a + r.blockers.length + (r.rootBlocked ? 1 : 0), 0);
+      const physical = getLastReports().reduce((a, r) => a + r.blockers.length, 0);
       if (physical === 0 && getBlockedCount() === 0) {
         void vscode.window.showInformationMessage(
           vscode.l10n.t("[aosp-nav] No Eclipse metadata blockers to fix (if the workspace has not been scanned yet, open an AOSP java file first)."));
@@ -396,8 +458,16 @@ export function activate(ctx: vscode.ExtensionContext): void {
       await clearOwnExclusions(ctx);
       await clearKotlinChannel(ctx);
       await resetCppSupport(ctx, (m) => channel.appendLine(m));
+      // module picks are written by the picker into the workspace layer
+      await vscode.workspace
+        .getConfiguration("aosp-nav")
+        .update("java.sourceRootModules", undefined, vscode.ConfigurationTarget.Workspace);
       void vscode.window.showInformationMessage(vscode.l10n.t("[aosp-nav] settings written by the plugin have been rolled back"));
     }),
+    vscode.commands.registerCommand(
+      "aosp-nav.selectJavaSourceRoots",
+      () => selectJavaSourceRootsByModule(ctx, (m) => channel.appendLine(m))
+    ),
     vscode.commands.registerCommand("aosp-nav.diagnostics", async () => {
       openOutput(channel);
       const lines: DiagLine[] = [];
@@ -458,7 +528,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       if (s?.meta) {
         const m = s.meta;
         const verify = m.verify
-          ? `, verified ${m.verify.checked}/${s.jars.length} jar(s)${m.verify.sampled ? " (sampled)" : ""}, missing ${m.verify.missing}`
+          ? `, cache verified ${m.verify.checked} jar(s)${m.verify.sampled ? " (sampled)" : ""}, missing ${m.verify.missing}`
           : "";
         lines.push({
           ok: null,
@@ -471,6 +541,15 @@ export function activate(ctx: vscode.ExtensionContext): void {
                 : "") +
               verify,
         });
+        if (m.jarSource) {
+          lines.push({
+            ok: m.jarSource.mode === "closure" ? true : null,
+            label: "jar source",
+            detail: m.jarSource.mode === "closure"
+              ? `closure of the selected module dirs + libcore common set: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt; see log)`
+              : `full-list fallback (${m.jarSource.reason ?? "unspecified"})`,
+          });
+        }
       }
       if (root) {
         // cache freshness: the same stamp/validity the scan path relies on
@@ -526,6 +605,16 @@ export function activate(ctx: vscode.ExtensionContext): void {
             : "open the AOSP root as the workspace folder to get cross-module source navigation",
         });
       }
+      // module picks: config read only (loading the 59 MB build index here
+      // would stall the panel, so derived roots are not counted)
+      const mods = cfgNow.javaSourceRootModules;
+      lines.push({
+        ok: null,
+        label: "sourceRootModules",
+        detail: mods.length
+          ? `${mods.length} selected: ${mods.join(", ")} (roots derived from out/soong/module_bp_java_deps.json)`
+          : "none selected (AOSP: Select Java Source Roots by Module)",
+      });
       // C/C++ (clangd): read-only status; never resolves files or writes CDB here
       const cppCfg = getConfig().cpp;
       const clangdExt = vscode.extensions.getExtension("llvm-vs-code-extensions.vscode-clangd");
@@ -618,16 +707,21 @@ export function activate(ctx: vscode.ExtensionContext): void {
       const pending = await isCleanPending(ctx);
       const actionNeeded = getBlockedCount();
       for (const r of getLastReports()) {
-        const n = r.blockers.length + (r.rootBlocked ? 1 : 0);
+        const n = r.blockers.length;
         const needsAction = n > 0 && actionNeeded > 0;
+        const rootNote = r.rootBlocked
+          ? " (workspace root itself has Eclipse metadata: open the AOSP root or a sub-directory as the workspace folder)"
+          : "";
         lines.push({
-          ok: n === 0 ? true : needsAction ? false : null,
+          ok: n === 0 ? (r.rootBlocked ? null : true) : needsAction ? false : null,
           label: `eclipse guard [${path.basename(r.folder)}]`,
           detail: n === 0
-            ? "no stale .project dirs"
+            ? r.rootBlocked
+              ? "workspace root contains .project — no whole-window exclusion is written for it; open the AOSP root or a sub-directory instead"
+              : "no stale .project dirs"
             : needsAction
-              ? `${n} blocker(s)${r.rootBlocked ? " (workspace root itself has Eclipse metadata)" : ""}, clean+reload pending${pending ? "" : " (not re-armed)"}`
-              : `${n} dir(s) already excluded from import (ignored, not blocking)`,
+              ? `${n} blocker(s)${rootNote}, clean+reload pending${pending ? "" : " (not re-armed)"}`
+              : `${n} dir(s) already excluded from import (ignored, not blocking)${rootNote}`,
           action: needsAction
             ? "run 'AOSP: Fix Eclipse Metadata Blockers' (one-time clean + reload)"
             : n > 0

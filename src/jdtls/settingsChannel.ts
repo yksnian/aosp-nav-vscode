@@ -20,6 +20,21 @@ function sameList(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
+/** Order-insensitive equality: a rewrite would trigger a full jdt.ls
+ *  setRawClasspath (there is no per-entry classpath API), so a different
+ *  order of the same jars is not worth it. */
+function sameSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const s = new Set(a);
+  return b.every((v) => s.has(v));
+}
+
+/** first `n` entries for the diff log, with a tail counter */
+function sample(xs: string[], n = 5): string {
+  if (xs.length === 0) return "none";
+  return `${xs.slice(0, n).join(", ")}${xs.length > n ? ` (+${xs.length - n} more)` : ""}`;
+}
+
 /** Write java.project.referencedLibraries with NO user interaction.
  *
  *  Design notes (0.1.2):
@@ -50,8 +65,9 @@ export async function applyReferencedLibraries(
   // did nothing until an unrelated rescan. The workspace layer shadows global,
   // so for scope=global an identical-or-absent workspace list is required too.
   const inEffect = scope === "workspace"
-    ? sameList(wsList, jars)
-    : (inspect?.workspaceValue === undefined || sameList(wsList, jars)) && sameList(globalList, jars);
+    ? sameList(wsList, jars) || sameSet(wsList, jars)
+    : (inspect?.workspaceValue === undefined || sameList(wsList, jars) || sameSet(wsList, jars))
+      && (sameList(globalList, jars) || sameSet(globalList, jars));
   if (inEffect) {
     return { changed: false, inEffect: true, written: jars.length };
   }
@@ -60,13 +76,25 @@ export async function applyReferencedLibraries(
     ? vscode.ConfigurationTarget.Workspace
     : vscode.ConfigurationTarget.Global;
 
+  // diff against the layer being written: the setting is one JSON value, so a
+  // write always replaces the whole list — the log at least says what changed
+  // (module-picker toggles show up here as a few added/removed jars)
+  const before = new Set(scope === "workspace" ? wsList : globalList);
+  const after = new Set(jars);
+  const added = jars.filter((j) => !before.has(j));
+  const removed = (scope === "workspace" ? wsList : globalList).filter((j) => !after.has(j));
+
   try {
     await jc.update("project.referencedLibraries", { include: jars }, target);
   } catch (e) {
     log(`[aosp-nav] failed to write java.project.referencedLibraries (${scope}): ${e}`);
     return { changed: false, inEffect: false, written: 0 };
   }
-  log(`[aosp-nav] referencedLibraries written to ${scope} layer: ${jars.length} jars`);
+  log(`[aosp-nav] referencedLibraries written to ${scope} layer: ${jars.length} jars (+${added.length}/-${removed.length})`);
+  if (added.length > 0 || removed.length > 0) {
+    log(`[aosp-nav]   added: ${sample(added)}`);
+    log(`[aosp-nav]   removed: ${sample(removed)}`);
+  }
 
   if (scope === "global") {
     const own = ctx.workspaceState.get<string[]>(OWN_WS_KEY);

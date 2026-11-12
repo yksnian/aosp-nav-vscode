@@ -11,6 +11,7 @@ export interface AospConfig {
   exclude: ExclusionConfig;
   kotlinEnabled: boolean;
   javaSourceRoots: string[];
+  javaSourceRootModules: string[];
   cpp: CppConfig;
 }
 
@@ -64,7 +65,10 @@ export function getConfig(): AospConfig {
       globs: c.get<string[]>("excludeGlobs") ?? [],
     },
     kotlinEnabled: c.get<boolean>("kotlin.enabled") ?? false,
-    javaSourceRoots: c.get<string[]>("java.sourceRoots") ?? ["frameworks/base/core/java"],
+    // no static fallback: defaults come from autoModulesForFolder (build
+    // index); this list is purely the user's hand-written additions now
+    javaSourceRoots: c.get<string[]>("java.sourceRoots") ?? [],
+    javaSourceRootModules: c.get<string[]>("java.sourceRootModules") ?? [],
     cpp: {
       enabled: c.get<boolean>("cpp.enabled") ?? true,
       restartDebounceMs: c.get<number>("cpp.restartDebounceMs") ?? 800,

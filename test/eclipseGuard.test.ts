@@ -25,9 +25,9 @@ describe("patternsFor", () => {
     expect(patternsFor(r)).toEqual(["/r/a", "/r/b"]);
   });
 
-  it("includes the folder itself when the workspace root is blocked", () => {
+  it("never excludes the workspace root itself (a whole-window rule would exclude everything)", () => {
     const r: GuardReport = { folder: "/r", blockers: [], rootBlocked: true };
-    expect(patternsFor(r)).toEqual(["/r"]);
+    expect(patternsFor(r)).toEqual([]);
   });
 
   it("dedups blockers pointing at the same dir", () => {

@@ -106,8 +106,8 @@ describe("guard session transcripts", () => {
 describe("countBlockers", () => {
   const r = (blockers: string[], rootBlocked: boolean): GuardReport => ({ folder: "/r", blockers, rootBlocked });
 
-  it("counts blocker dirs plus a blocked workspace root", () => {
-    expect(countBlockers([r(["/r/a", "/r/b"], false), r([], true)])).toBe(3);
+  it("counts blocker dirs only — a blocked workspace root is not fixable by exclusion", () => {
+    expect(countBlockers([r(["/r/a", "/r/b"], false), r([], true)])).toBe(2);
   });
 
   it("is 0 for a clean tree", () => {

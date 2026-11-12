@@ -16,6 +16,7 @@
       { "command": "aosp-nav.rescan", "title": "Rescan Jars", "category": "AOSP" },
       { "command": "aosp-nav.diagnostics", "title": "Show Diagnostics", "category": "AOSP" },
       { "command": "aosp-nav.fixEclipseBlockers", "title": "Fix Eclipse Metadata Blockers", "category": "AOSP" },
+      { "command": "aosp-nav.selectJavaSourceRoots", "title": "Select Java Source Roots by Module", "category": "AOSP" },
       { "command": "aosp-nav.resetSettings", "title": "Reset Plugin Settings", "category": "AOSP" }
     ],
     "configuration": {
@@ -69,8 +70,14 @@
         "aosp-nav.java.sourceRoots": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["frameworks/base/core/java"],
-          "description": "Directories (relative to the AOSP root, or absolute) written to the workspace layer of java.project.sourcePaths, so go-to-definition lands in real .java sources instead of the decompiled jars. Keep the list focused: injecting sourcePaths disables jdt.ls per-file source inference, so modules outside the list keep jar navigation only. An empty array disables the injection. Takes effect after a window reload."
+          "default": [],
+          "description": "Hand-written source root additions (relative to the AOSP root, or absolute), merged on top of the module-based roots. Module roots come from the soong build index; an AOSP-root window selects frameworks/base/core/java and frameworks/base/services/core by default and injects every first-party source root they own (written to aosp-nav.java.sourceRootModules). Injecting sourcePaths disables jdt.ls per-file source inference for modules outside the injected roots. Pushed into the running language server, no window reload needed."
+        },
+        "aosp-nav.java.sourceRootModules": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Module directories (relative to the AOSP root) picked via 'AOSP: Select Java Source Roots by Module'. An AOSP-root window with no written selection gets frameworks/base/core/java and frameworks/base/services/core persisted here by default (every first-party source root they own is injected — on a real tree 16 roots instead of 2). Subdirectory windows keep the auto selection of production modules under the folder (tests/demos/samples/commercial excluded). Writing an explicit list (even an empty one) disables the auto selection. Third-party roots (external/, vendor/, ...) are offered as a separate opt-in step. Pushed into the running language server, no window reload needed."
         },
         "aosp-nav.cpp.enabled": {
           "type": "boolean",

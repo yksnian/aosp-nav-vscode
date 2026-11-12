@@ -21,9 +21,11 @@ export function escapeGlob(p: string): string {
 }
 
 export function patternsFor(report: GuardReport): string[] {
-  const set = new Set<string>(report.blockers);
-  if (report.rootBlocked) set.add(report.folder);
-  return [...set].map(escapeGlob);
+  // The root itself is never excluded: a `**`-style whole-window exclude would
+  // leave nothing for jdt.ls to work on. rootBlocked is surfaced as an
+  // actionable warning instead (the fix is to open the AOSP root or a
+  // sub-directory, which this extension cannot do for the user).
+  return [...new Set(report.blockers)].map(escapeGlob);
 }
 
 /** Walk the whole tree looking for directories that still carry a .project

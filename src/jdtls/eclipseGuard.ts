@@ -55,6 +55,10 @@ let touchedThisSession = false;
  *  both read this one number. Distinct from the on-disk blocker count, which
  *  stays > 0 after a successful fix. */
 let blockedCount = 0;
+/** The workspace-root `.project` warning is issued once per session; there is
+ *  no action the guard can take for that case, so repeating it every scan
+ *  would only be noise. */
+let rootWarned = false;
 
 export function getLastReports(): GuardReport[] {
   return lastReports;
@@ -213,6 +217,29 @@ export async function guardWorkspace(
   }
   lastReports = reports;
 
+  // A `.project` in the workspace root cannot be excluded (that would exclude
+  // the whole window), so say what actually fixes it instead of writing a
+  // useless rule. Once per session.
+  const rootBlocked = reports.filter((r) => r.rootBlocked).map((r) => r.folder);
+  if (rootBlocked.length > 0 && !rootWarned) {
+    rootWarned = true;
+    log(
+      `[aosp-nav] eclipse guard: workspace root carries .project (${rootBlocked.join(", ")}); open the AOSP root or a sub-directory instead`
+    );
+    const button = vscode.l10n.t("Show Diagnostics");
+    void vscode.window
+      .showWarningMessage(
+        vscode.l10n.t(
+          "[aosp-nav] The workspace folder {0} itself contains a .project file, so jdt.ls imports it as an Eclipse project and the injected jars cannot take effect. Whole-window exclusion is not applied for this case — open the AOSP root or a sub-directory (for example frameworks/base) as the workspace folder instead.",
+          rootBlocked.join(", ")
+        ),
+        button
+      )
+      .then((pick) => {
+        if (pick === button) void vscode.commands.executeCommand("aosp-nav.diagnostics");
+      });
+  }
+
   const physical = blockerCount();
   const allHandled = patternsNow.length > 0 && patternsNow.every((p) => handled.has(p));
   const outcome = decideGuardOutcome({
@@ -288,4 +315,5 @@ export async function clearOwnExclusions(ctx: vscode.ExtensionContext): Promise<
   blockedCount = 0;
   touchedThisSession = false;
   notifiedThisSession = false;
+  rootWarned = false;
 }

@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.1.9-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.1.11-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java/Kotlin 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
 
@@ -36,8 +36,9 @@ aosp-nav 自动弥合这个鸿沟:
 
 1. 打开 AOSP checkout 内任意 `.java` 文件 (把 AOSP 根作为 workspace 打开也可以——打开 Java 文件之前什么都不会发生)。
 2. 观察状态栏: `$(sync~spin) AOSP` → `$(check) AOSP:<n>` (数秒; 之后走缓存, 秒级)。
-3. **仅首次**: 语言服务器后台索引 classpath——frameworks/base 量级的树需 30-60 分钟, CPU 高占用属正常, 索引状态持久化, 之后打开秒级。**索引期间请勿重启语言服务器**。
-4. 跳转/补全即可解析 `android.*`、`com.android.*`、system_server 内部类型等。只存在于 jar 中的类型 (AIDL 接口、proto 类、aconfig flags) 跳转落点为反编译视图——属预期行为, 源码树内本就没有它们的 .java。
+3. **首次运行, 在注入之前**: 会弹一次模态窗, 询问是否选择 Java 源码根模块。选择则打开模块选择器, 只注入你勾选的模块; 关闭弹窗 (或选"使用默认值") 则默认勾选 `frameworks/base/core/java` 与 `frameworks/base/services/core` 两个模块, 并注入它们各自拥有的全部一级源码根 (真实树上为 16 个根 / 约 7.5k 个 `.java`)。该默认值会写入 `aosp-nav.java.sourceRootModules`, 因此再次打开模块选择器时就是这两项处于勾选状态。子目录窗口不弹窗, 使用该目录的构建索引模块。之后可通过 `AOSP: Select Java Source Roots by Module` 修改。
+4. **仅首次**: 语言服务器后台索引 classpath——frameworks/base 量级的树需 30-60 分钟, CPU 高占用属正常, 索引状态持久化, 之后打开秒级。**索引期间请勿重启语言服务器**。
+5. 跳转/补全即可解析 `android.*`、`com.android.*`、system_server 内部类型等。只存在于 jar 中的类型 (AIDL 接口、proto 类、aconfig flags) 跳转落点为反编译视图——属预期行为, 源码树内本就没有它们的 .java。
 
 workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测以打开的文件为准, 不依赖 workspace 位置。若 guard 首次在工作区发现 Eclipse 元数据遗留目录 (常见于打开 AOSP 根目录、且此前用过 nvim 版插件或 buildship 的机器), 会提示一次性"清理并重载" (即 `java.clean.workspace`): 清理会重建语言服务器工作区, 之后 Eclipse 首次索引约 30-60 分钟, 属一次性开销。
 
@@ -48,16 +49,16 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 1. 安装 `redhat.java` (扩展依赖)。C/C++ 需另外安装 `llvm-vs-code-extensions.vscode-clangd`——clangd 扩展不自带服务端。
 2. 在与 AOSP checkout 相同的环境里安装 VSIX。Remote-WSL 下在 WSL 终端执行 `code --install-extension aosp-nav-0.1.9.vsix`, 然后重载窗口。
 3. 把 AOSP checkout 作为 workspace 打开。多根窗口可用, 但同一窗口内所有 C/C++ 文件共用一份 `clangd.arguments`。
-4. **Java**: 打开任意 `.java`, 等状态栏变为 `$(check) AOSP:<n>`。首次注入 `sourcePaths` 会提示重载窗口——请接受, 否则本次会话 jdt.ls 仍按 jar 跳转。修改 `aosp-nav.java.sourceRoots` 后同样需要重载。
+4. **Java**: 打开任意 `.java`, 等状态栏变为 `$(check) AOSP:<n>`。模块选择弹窗在注入之前出现; 跳过则默认勾选 `frameworks/base/core/java` + `frameworks/base/services/core` 两个模块并注入其全部一级源码根 (AOSP 根窗口)。`sourcePaths` 会直接推送到运行中的语言服务器, 正常情况下无需重载; 只有当 jdt.ls 拒绝热更新时才会提示重载, 且同一份源码根列表只提示一次。
 5. **C/C++**: 把 `clangd.path` 指向 `<root>/prebuilts/clang/host/linux-x86/clang-r*/bin/clangd` (或接受首次打开时的建议)。打开一个 `.cpp`; 首个文件可能先用旧参数启动, 约 800 ms 去抖后重启一次 clangd, 之后复用。验证: 打开一个包含 `#include` 的 C/C++ 文件, 对文件内引用的符号按 F12 → 应落到源码树内的对应头文件。`AOSP: Show Diagnostics` 中 `cpp origin` 应显示 `compdb` 或 `cc_deps`。
 6. **生成头 (AIDL/protobuf 产物等)**: `cc_deps` 故意不包含 `out/soong/.intermediates`。在同一棵树执行 `make SOONG_GEN_COMPDB=1 nothing` (或 `m SOONG_GEN_COMPDB=1 nothing`) 生成官方 compdb, 再重载一次窗口切换到 compdb 档。
-7. **需要重载窗口的场景仅限**: 首次注入 `sourcePaths`、修改 `aosp-nav.java.sourceRoots`、以及会话开始后才生成 compdb 需要切换档位。C/C++ 增量条目写入与普通 `clangd.arguments` 变更都不需要重载。
+7. **需要重载窗口的场景仅限**: 会话开始后才生成 compdb 需要切换档位, 以及 jdt.ls 拒绝热更新 `sourcePaths` 的少数情况。修改源码根 (`aosp-nav.java.sourceRoots` / `sourceRootModules`)、C/C++ 增量条目写入与普通 `clangd.arguments` 变更都不需要重载。
 
 ## 命令
 
 | 命令                          | 说明                                                         |
 | ----------------------------- | ------------------------------------------------------------ |
-| `AOSP: Rescan Jars`           | 清除 jar 缓存并重扫 (同时重跑 eclipse guard)                  |
+| `AOSP: Rescan Jars`           | 清除 jar 缓存并重扫 (同时重跑 eclipse guard, 跳过其 24 小时缓存——手动删掉的 `.project` 遗留目录会立即被重新识别) |
 | `AOSP: Show Diagnostics`      | 结构化自检报告 (root/缓存/settings/扩展状态/guard)——提 issue 时请附上 |
 | `AOSP: Fix Eclipse Metadata Blockers` | 对遗留 Eclipse 元数据目录执行一次性"清理并重载"        |
 | `AOSP: Reset Plugin Settings` | 移除本插件添加过的所有设置 (含 workspace 层); 合并过的键保留你自己的条目 |
@@ -76,7 +77,8 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = 用户列表追加到默认值后; `replace` = 丢弃默认值    |
 | `aosp-nav.settingsScope` | `"workspace"` | `referencedLibraries` 与 Gradle/Maven 导入器开关的写入位置: `workspace` (仓库内 `.vscode/settings.json`, 不影响其他 Java 工程) 或 `global` (用户 settings, 多窗口共享, 但绝对路径 jar 会污染非 AOSP 的 Java 工程)。0.1.2 起写入不再需要确认; 切换 scope 时插件会自动清掉自己先前写在另一层的旧列表。你自己改回 `true` 的开关插件不会再动 |
 | `aosp-nav.kotlin.enabled` | `false` | 实验性: 将同一份 jar 列表经 fwcd kotlin-language-server 的全局 classpath 脚本注入 (见 [Kotlin 支持](#kotlin-支持实验性)) |
-| `aosp-nav.java.sourceRoots` | `["frameworks/base/core/java"]` | 写入 workspace 层 `java.project.sourcePaths` 的源码根 (相对 AOSP 根或绝对路径), 让跳转落到真实 `.java` 而非反编译 jar。空数组关闭注入; 修改后需重载窗口 |
+| `aosp-nav.java.sourceRoots` | `[]` | 手写补充的源码根 (相对 AOSP 根或绝对路径), 叠加在模块选择之上写入 workspace 层 `java.project.sourcePaths`。空数组表示"没有手写补充", 不再等于"关闭注入"——模块选择 (或根窗口默认值) 仍会生效。直接热更新到运行中的服务器, 无需重载 |
+| `aosp-nav.java.sourceRootModules` | `[]` (从未写入 = 根窗口默认模块) | 通过 `AOSP: Select Java Source Roots by Module` 选择的模块目录。AOSP 根窗口在从未写入时会默认写入并勾选 `frameworks/base/core/java` + `frameworks/base/services/core`, 注入它们各自拥有的全部一级源码根 (真实树上 16 个根 / 约 7.5k 个 `.java`); 子目录窗口则使用该目录下的生产模块 (排除 tests/demos/samples/commercial), 来自 `out/soong/module_bp_java_deps.json`。显式写入列表 (即使 `[]` 表示全不选) 会关闭这两种默认。无需重载 |
 | `aosp-nav.cpp.enabled` | `true` | C/C++ 走 clangd (见 [C/C++ 跳转](#cc-跳转-clangd)) |
 | `aosp-nav.cpp.restartDebounceMs` | `800` | `clangd.arguments` 真正变化后重启 clangd 的 debounce; 后续增量 CDB 条目由 clangd 自动重载, 不重启 |
 | `aosp-nav.cpp.suggestClangdPath` | `true` | 提示把 `clangd.path` 指向 AOSP prebuilt (仅在用户点击后写入) |
@@ -87,12 +89,12 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 
 ## Java 源码跳转 (`java.project.sourcePaths`)
 
-默认跨模块跳转落在注入 jar 的反编译视图。插件因此把 `aosp-nav.java.sourceRoots` (默认 `frameworks/base/core/java`) 写入 workspace 层 `java.project.sourcePaths` (相对 workspace folder 的路径; 绝对 AOSP 路径不会进入用户设置)。真树上跨模块引用默认源码根内的类型时, 会跳到 `frameworks/base/core/java` 下的真实 `.java` 文件, 而不是反编译视图。
+默认跨模块跳转落在注入 jar 的反编译视图。插件因此把 `aosp-nav.java.sourceRoots` 的手写根与已选模块一起写入 workspace 层 `java.project.sourcePaths` (相对 workspace folder 的路径; 绝对 AOSP 路径不会进入用户设置)。在写入模块选择之前, AOSP 根窗口默认勾选 `frameworks/base/core/java` 与 `frameworks/base/services/core` 两个模块, 并注入它们拥有的**全部**一级源码根——真实树上 16 个根 / 约 7.5k 个 `.java`, 而只取这两个目录字面量是 2 个根 / 7.2k; 多出来的根是这两个模块的小型兄弟源码目录 (例如 `frameworks/base/nfc-non-updatable/java`、`frameworks/base/services/telecom/mainline/java`、`frameworks/libs/modules-utils/java`)。子目录窗口则使用该目录下的生产模块 (来自 `out/soong/module_bp_java_deps.json`)。真树上跨模块引用这些根内的类型时, 会跳到真实 `.java` 文件, 而不是反编译视图。
 
 两个刻意的限制:
 
-- **列表按设计不完整。** 注入 `sourcePaths` 会关闭 jdt.ls 的逐文件源码推断, 未列出的模块只丢**源码**跳转, jar 跳转仍保留。把常改模块的源码根加进 `aosp-nav.java.sourceRoots`。整树写入不可行 (真树 21 万打包 `.java` / 8.4k 源码根并集)。
-- **必须重载窗口。** jdt.ls 在 import 阶段读取 `sourcePaths`, 运行期写入对当前会话无效; 列表变化时插件会提示一次"重载窗口"(带按钮)。插件不会调用 `java.project.getAll` / `getClasspaths` 探测结果——真树上它们会阻塞数分钟。
+- **列表按设计不完整。** 注入 `sourcePaths` 会关闭 jdt.ls 的逐文件源码推断, 未列出的模块只丢**源码**跳转, jar 跳转仍保留。把常改模块的源码根加进 `aosp-nav.java.sourceRoots`, 或用 `AOSP: Select Java Source Roots by Module` 选模块——选择器里已勾选的模块排在最前, 筛选框会显示有多少模块目录被 eclipse guard 的排除项隐藏 (只统计插件自己写入的规则; 一个都没有时不显示数字)。整树写入不可行 (真树 21 万打包 `.java` / 8.4k 源码根并集)。
+- **正常路径不需要重载。** 插件把列表热推送到运行中的 jdt.ls 会话 (`java.project.listSourcePaths` / `addToSourcePath` / `removeFromSourcePath` 经 `java.execute.workspaceCommand` 转发, 以 redhat.java 的 `serverReady()` 为就绪信号)。只有当服务器拒绝热更新时才提示"重载窗口", 且按源码根列表去重——同一份列表被系统性拒绝也不会每次重载都弹。运行期同步只移除本插件写入的条目, 手写的 `java.project.sourcePaths` 条目不会被删。插件不会调用 `java.project.getAll` / `getClasspaths` 探测结果——真树上它们会阻塞数分钟。
 
 ## C/C++ 跳转 (clangd)
 
@@ -156,7 +158,7 @@ Eclipse 后台索引还在跑 (状态栏转圈)。等 CPU 降下来——大树�
 
 jdt.ls 的 `java.project.referencedLibraries` **只对 invisible project 生效**; 而树里任何含 `.project` 的子目录都会被当作真实 Eclipse 工程导入, 导致 invisible project 永远不创建、注入的 jar 完全无效——打开的文件落入无 classpath 的 default project, 跳转全挂。这些目录一般是早年 nvim-jdtls/buildship 会话遗留的元数据 (典型如 `external/<lib>/`、或曾用旧工具打开过的子仓库), 0.1.2 之前打开 AOSP 根目录必然踩中。
 
-处理 (自动): guard 把这些目录逐个写进 workspace 层 `java.import.exclusions` (绝对路径精确匹配, 不影响其他工程), 并提示一次性"清理并重载"——因为已导入的工程持久化在语言服务器工作区里, 必须 `java.clean.workspace` 重建后排除才生效。清理后 Eclipse 首次索引约 30-60 分钟, 此后不再需要。也可手动执行 `AOSP: Fix Eclipse Metadata Blockers`。
+处理 (自动): guard 把这些目录逐个写进 workspace 层 `java.import.exclusions` (绝对路径精确匹配, 不影响其他工程), 并提示一次性"清理并重载"——因为已导入的工程持久化在语言服务器工作区里, 必须 `java.clean.workspace` 重建后排除才生效。清理后 Eclipse 首次索引约 30-60 分钟, 此后不再需要。也可手动执行 `AOSP: Fix Eclipse Metadata Blockers`。若 `.project` 就在 workspace 目录本身, 插件不会写入排除规则 (整窗排除等于把所有内容都排除); 此时改为警告一次, 正确的做法是把 AOSP 根或其子目录 (如 `frameworks/base`) 作为 workspace 打开。
 
 注: 只要含 `.project` 就足以阻断根 invisible project, 判据只看 `.project` 是否存在, 不要求 `.classpath`, 也没有深度上限 (真树有 159 个此类目录, 其中 4 个深于 5 层)。只排除一部分等于没有 invisible project。
 

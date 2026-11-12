@@ -16,9 +16,12 @@ import type { GuardReport } from "./eclipseGuardScan";
 
 export type GuardOutcome = "clean" | "converged" | "oweClean";
 
-/** Stale .project dirs currently on disk. */
+/** Stale .project dirs currently on disk. The workspace root itself is NOT
+ *  counted: it cannot be excluded (that would exclude everything), so it can
+ *  never be fixed by this guard — the root case gets its own one-time warning
+ *  and must not keep the clean+reload nag alive forever. */
 export function countBlockers(reports: GuardReport[]): number {
-  return reports.reduce((n, r) => n + r.blockers.length + (r.rootBlocked ? 1 : 0), 0);
+  return reports.reduce((n, r) => n + r.blockers.length, 0);
 }
 
 export interface GuardInputs {
