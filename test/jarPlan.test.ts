@@ -147,8 +147,34 @@ describe("computeInjectedJars", () => {
     expect(r.jars).toContain(
       path.join(root, "out/soong/.intermediates/libcore/core-oj/android_common_apex31/javac/core-oj.jar")
     );
-    expect(logs.some((l) => l.includes("index variant of common module core-oj"))).toBe(true);
-    expect(logs.some((l) => l.includes("common jar(s) rescued"))).toBe(true);
+    expect(r.rescued).toBe(1);
+    expect(logs.some((l) => l.includes("recovered through variant fallback"))).toBe(true);
+  });
+
+  it("recovers a non-common starved module from a built variant", async () => {
+    const root = await makeRoot(
+      {
+        app: { path: ["frameworks/base/core/java"], jars: ["out/j/a.jar"], dependencies: ["aidl-lib"] },
+        // index registers a turbine jar that was never built; javac exists
+        "aidl-lib": {
+          path: ["hardware/interfaces/sample"],
+          jars: ["out/soong/.intermediates/hardware/interfaces/sample/aidl-lib/turbine-combined/aidl-lib.jar"],
+        },
+      },
+      [
+        "out/j/a.jar",
+        "out/soong/.intermediates/hardware/interfaces/sample/aidl-lib/android_common/javac/aidl-lib.jar",
+      ]
+    );
+    const logs: string[] = [];
+    const r = await computeInjectedJars(root, ["frameworks/base/core/java"], FULL, (m) => logs.push(m));
+    expect(r.mode).toBe("closure");
+    expect(r.jars).toContain(
+      path.join(root, "out/soong/.intermediates/hardware/interfaces/sample/aidl-lib/android_common/javac/aidl-lib.jar")
+    );
+    expect(r.rescued).toBe(1);
+    expect(r.starved).toBe(0);
+    expect(r.dropped).toBe(0);
   });
 
   it("reuses the closure for the same module set while the index is unchanged", async () => {

@@ -5,7 +5,7 @@
   "[aosp-nav] not an AOSP file": "[aosp-nav] 非 AOSP 文件",
   "[aosp-nav] The Java language server left crash evidence ({0}). Raise java.jdt.ls.vmargs (e.g. -Xmx6G) and consider java.autobuild.enabled=false; aosp-nav does not change these settings.": "[aosp-nav] Java 语言服务留下了崩溃痕迹 ({0})。请调大 java.jdt.ls.vmargs (例如 -Xmx6G), 并考虑设置 java.autobuild.enabled=false; aosp-nav 不会修改这些设置。",
   "Show Diagnostics": "查看诊断",
-  "[aosp-nav] {0} jars injected (closure: {1} dropped, {2} dangling, {3} unbuilt)": "[aosp-nav] 已注入 {0} 个 jar (closure: 剔除 {1} 条缺失/越界条目, 悬空模块 {2}, 未编译模块 {3})",
+  "[aosp-nav] {0} jars injected (closure: {1} dropped, {2} rescued by variant fallback, {3} dangling, {4} unbuilt)": "[aosp-nav] 已注入 {0} 个 jar (closure: 剔除 {1} 条缺失/越界条目, 变体回退救回 {2} 个模块, 悬空模块 {3}, 未编译模块 {4})",
   "[aosp-nav] {0} jars injected (full-list fallback: {1})": "[aosp-nav] 已注入 {0} 个 jar (回退全量列表: {1})",
   "[aosp-nav] No Eclipse metadata blockers to fix (if the workspace has not been scanned yet, open an AOSP java file first).": "[aosp-nav] 没有需要修复的 Eclipse 元数据阻塞 (尚未扫描时请先打开一个 AOSP java 文件)。",
   "[aosp-nav] settings written by the plugin have been rolled back": "[aosp-nav] 插件写入的 settings 已回滚",

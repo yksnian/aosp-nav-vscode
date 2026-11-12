@@ -32,6 +32,7 @@ interface ClosureCacheEntry {
   relJars: string[];
   unmapped: string[];
   starved: number;
+  rescued: number;
   dropped: number;
   unknownSeeds: string[];
   missingCommon: string[];
@@ -45,13 +46,14 @@ const closureCache = new Map<string, ClosureCacheEntry>();
  *  beats the merged combined jar beats the header-only turbine jar */
 const JAR_KINDS = ["javac", "combined", "turbine-combined"];
 
-/** Disk rescue for common modules whose index-registered variants are not on
- *  disk (e.g. libcore only lists turbine-combined while the tree built the
- *  javac/combined variants): scan the module's intermediates dir for any built
- *  jar. Variant dirs are sorted ascending and the last one wins, so apex
- *  variants (android_common_apexNN) beat plain ones. Returns an AOSP-relative
- *  path or null. */
-async function rescueCommonJar(root: string, name: string, dir: string): Promise<string | null> {
+/** Variant fallback: scan a module's intermediates dir for a built jar.
+ *  Used when every jar the build index registers for the module is missing on
+ *  disk (typically the index names a turbine-combined header jar while the
+ *  tree built the javac/combined variant). Variant dirs are sorted ascending
+ *  and the last one wins, so apex variants (android_common_apexNN) beat plain
+ *  ones; within a variant, full javac output beats combined beats turbine.
+ *  Returns an AOSP-relative path or null. */
+async function rescueBuiltJar(root: string, name: string, dir: string): Promise<string | null> {
   const base = `out/soong/.intermediates/${dir}/${name}`;
   let variants: string[];
   try {
@@ -83,6 +85,9 @@ export interface JarPlanResult {
   unmapped: string[];
   /** modules whose jars are listed in the index but not built yet */
   starved: number;
+  /** modules recovered through the variant fallback (index variant missing,
+   *  another built variant used) */
+  rescued: number;
   /** unique jar entries the closure dropped (missing on disk / off-tree) */
   dropped: number;
   unknownSeeds: string[];
@@ -103,6 +108,7 @@ function fallback(
     reason,
     unmapped: [],
     starved: 0,
+    rescued: 0,
     dropped: 0,
     unknownSeeds: [],
     missingCommon: [],
@@ -174,6 +180,7 @@ export async function computeInjectedJars(
         mode: "closure",
         unmapped: cached.unmapped,
         starved: cached.starved,
+        rescued: cached.rescued,
         dropped: cached.dropped,
         unknownSeeds: cached.unknownSeeds,
         missingCommon: cached.missingCommon,
@@ -186,7 +193,12 @@ export async function computeInjectedJars(
   const index = await loadJavaModuleIndex(root, log);
   if (!index) return fallback(fullJars, `${depsFile} not found or not valid JSON`, log);
 
-  const r = await closureJars(index, seeds, { commonModules: COMMON_MODULES, exists });
+  const r = await closureJars(index, seeds, {
+    commonModules: COMMON_MODULES,
+    exists,
+    // variant fallback for every module whose index variant is not on disk
+    rescue: (name, e) => rescueBuiltJar(root, name, e.path),
+  });
 
   if (r.unknownSeeds.length > 0) {
     log(`[aosp-nav] jarPlan: ${r.unknownSeeds.length} selected module dir(s) not in the index: ${r.unknownSeeds.join(", ")}`);
@@ -202,32 +214,37 @@ export async function computeInjectedJars(
     );
   }
   if (r.starved > 0) {
-    log(`[aosp-nav] jarPlan: ${r.starved} closure module(s) reference jar(s) not on disk yet (not built) — they join automatically after the next build + rescan`);
+    log(`[aosp-nav] jarPlan: ${r.starved} closure module(s) reference jar(s) not on disk yet and have no built variant (not built) — they join automatically after the next build + rescan`);
+  }
+  if (r.rescued > 0) {
+    log(`[aosp-nav] jarPlan: ${r.rescued} module(s) recovered through variant fallback (index variant missing, a built javac/combined variant used)`);
   }
 
   // common modules with no surviving index jar: look the built jar up directly
   // in .intermediates (its variant/kind differ from what the index registers)
-  const rescued: string[] = [];
+  const commonRescued: string[] = [];
   for (const name of r.commonStarved) {
     const dir = index.byName.get(name)?.path;
     if (!dir) continue;
-    const rel = await rescueCommonJar(root, name, dir);
+    const rel = await rescueBuiltJar(root, name, dir);
     if (rel) {
       log(`[aosp-nav] jarPlan: index variant of common module ${name} is not on disk — using ${rel}`);
-      rescued.push(rel);
+      commonRescued.push(rel);
     } else {
       log(`[aosp-nav] jarPlan: common module ${name} has no built jar on disk (not built yet?)`);
     }
   }
 
-  const allRel = [...r.jars, ...rescued];
+  const allRel = [...r.jars, ...commonRescued];
   if (allRel.length === 0) return fallback(fullJars, "closure produced 0 existing jars", log);
 
-  log(`[aosp-nav] jarPlan: closure of ${seeds.length} module dir(s) = ${allRel.length} jars (${r.visited} modules visited, ${r.dropped} dropped${rescued.length > 0 ? `, ${rescued.length} common jar(s) rescued from disk` : ""})`);
+  const rescued = r.rescued + commonRescued.length;
+  log(`[aosp-nav] jarPlan: closure of ${seeds.length} module dir(s) = ${allRel.length} jars (${r.visited} modules visited, ${r.dropped} dropped, ${rescued} rescued by variant fallback)`);
   closureCache.set(cacheKey, {
     relJars: allRel,
     unmapped: r.unmapped,
     starved: r.starved,
+    rescued,
     dropped: r.dropped,
     unknownSeeds: r.unknownSeeds,
     missingCommon: r.missingCommon,
@@ -241,6 +258,7 @@ export async function computeInjectedJars(
     mode: "closure",
     unmapped: r.unmapped,
     starved: r.starved,
+    rescued,
     dropped: r.dropped,
     unknownSeeds: r.unknownSeeds,
     missingCommon: r.missingCommon,

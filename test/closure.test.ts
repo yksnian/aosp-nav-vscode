@@ -101,6 +101,32 @@ describe("closureJars", () => {
     expect(r.jars).not.toContain("out/soong/.intermediates/libcore/core-oj/javac/core-oj.jar");
   });
 
+  it("falls back to a built variant instead of dropping a starved module", async () => {
+    const idx = buildIndex({
+      app: {
+        path: ["p"],
+        jars: ["out/soong/.intermediates/p/app/turbine-combined/app.jar"],
+        dependencies: ["alt", "gone"],
+      },
+      alt: { path: ["p/alt"], jars: ["out/soong/.intermediates/p/alt/turbine-combined/alt.jar"] },
+      gone: { path: ["p/gone"], jars: ["out/soong/.intermediates/p/gone/turbine-combined/gone.jar"] },
+    });
+    const rescuedCalls: string[] = [];
+    const r = await closureJars(idx, ["p"], {
+      exists: () => false,
+      rescue: (name) => {
+        rescuedCalls.push(name);
+        return name === "alt" ? "out/soong/.intermediates/p/alt/android_common/javac/alt.jar" : null;
+      },
+    });
+    expect(rescuedCalls.sort()).toEqual(["alt", "app", "gone"]);
+    expect(r.jars).toEqual(["out/soong/.intermediates/p/alt/android_common/javac/alt.jar"]);
+    expect(r.rescued).toBe(1);
+    // only the module with no built variant is starved, and only its entry is dropped
+    expect(r.starved).toBe(2);
+    expect(r.dropped).toBe(2);
+  });
+
   it("reports selected dirs missing from the index", async () => {
     const r = await closureJars(fixture(), ["frameworks/base/core/java", "gone"]);
     expect(r.unknownSeeds).toEqual(["gone"]);

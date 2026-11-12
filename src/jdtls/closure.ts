@@ -46,6 +46,13 @@ export interface ClosureOptions {
   /** disk-existence predicate over AOSP-relative jar paths; a jar failing it
    *  is dropped and its module counts toward `starved` (if it had candidates) */
   exists?: (relJar: string) => boolean | Promise<boolean>;
+  /** Variant fallback: called once for a module whose index-registered jars
+   *  are ALL missing on disk. Returns an AOSP-relative path of a jar this tree
+   *  actually built (e.g. the javac/combined variant while the index lists
+   *  turbine-combined), or null when nothing is built. Only called when the
+   *  caller's `exists` already rejected every index entry, so it costs one
+   *  directory scan per starved module. */
+  rescue?: (name: string, entry: { path: string }) => string | null | Promise<string | null>;
 }
 
 export interface ClosureResult {
@@ -53,9 +60,13 @@ export interface ClosureResult {
   jars: string[];
   /** reachable module names absent from the index (dangling edges) */
   unmapped: string[];
-  /** reachable modules with jar candidates but none existing on disk */
+  /** reachable modules with jar candidates but none existing on disk AND no
+   *  variant fallback found */
   starved: number;
-  /** unique jar entries rejected by the path rule or missing on disk */
+  /** modules recovered through the variant fallback */
+  rescued: number;
+  /** unique jar entries that could not be mapped to any existing jar
+   *  (unrecovered modules only; rescued modules are not counted) */
   dropped: number;
   /** selected dirs with no module in the index (stale/renamed selection) */
   unknownSeeds: string[];
@@ -82,27 +93,43 @@ export async function closureJars(
   const commonStarved: string[] = [];
   const visited = new Set<string>();
   let starved = 0;
+  let rescued = 0;
   const exists = opts.exists;
   // unique paths, not hit count: one missing jar listed by many modules is
   // still one dropped jar
   const dropped = new Set<string>();
 
-  const collect = async (e: { jars: string[] }): Promise<number> => {
+  const collect = async (
+    name: string,
+    e: { jars: string[]; path: string }
+  ): Promise<{ got: number; rescued: boolean }> => {
     let got = 0;
+    const rejected: string[] = [];
     for (const rel of e.jars) {
       // tree-relative paths only; subject to the caller's disk check
       if (rel.startsWith("/") || rel.includes("..")) {
-        dropped.add(rel);
+        rejected.push(rel);
         continue;
       }
       if (exists && !(await exists(rel))) {
-        dropped.add(rel);
+        rejected.push(rel);
         continue;
       }
       jars.add(rel);
       got++;
     }
-    return got;
+    // variant fallback: every index entry is missing, but this tree may have
+    // built a different variant of the same module (index says turbine,
+    // intermediates hold javac/combined). One directory scan per such module.
+    if (got === 0 && rejected.length > 0 && opts.rescue && e.path) {
+      const alt = await opts.rescue(name, e);
+      if (alt && !alt.startsWith("/") && !alt.includes("..")) {
+        jars.add(alt);
+        return { got: 1, rescued: true };
+      }
+    }
+    for (const r of rejected) dropped.add(r);
+    return { got, rescued: false };
   };
 
   // BFS from every module living in a selected dir (queue grows in place)
@@ -124,7 +151,9 @@ export async function closureJars(
       unmapped.add(name); // dangling edge: referenced, but not in the index
       continue;
     }
-    if ((await collect(e)) === 0 && e.jars.length > 0) starved++;
+    const c = await collect(name, e);
+    if (c.rescued) rescued++;
+    else if (c.got === 0 && e.jars.length > 0) starved++;
     for (const d of [...e.dependencies, ...e.libs, ...e.staticLibs]) {
       if (!visited.has(d)) queue.push(d);
     }
@@ -137,13 +166,16 @@ export async function closureJars(
       missingCommon.push(name);
       continue;
     }
-    if ((await collect(e)) === 0) commonStarved.push(name);
+    const c = await collect(name, e);
+    if (c.rescued) rescued++;
+    else if (c.got === 0) commonStarved.push(name);
   }
 
   return {
     jars: [...jars].sort(),
     unmapped: [...unmapped].sort(),
     starved,
+    rescued,
     dropped: dropped.size,
     unknownSeeds: [...unknownSeeds].sort(),
     missingCommon,

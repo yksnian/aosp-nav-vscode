@@ -65,6 +65,8 @@ interface SessionMeta {
     unmapped: number;
     /** modules whose jars are not built yet */
     starved: number;
+    /** modules recovered by the variant fallback */
+    rescued: number;
     /** unique jar entries the closure dropped (missing on disk / off-tree) */
     dropped: number;
   };
@@ -351,6 +353,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
           reason: plan.reason,
           unmapped: plan.unmapped.length,
           starved: plan.starved,
+          rescued: plan.rescued,
           dropped: plan.dropped,
         };
       }
@@ -407,7 +410,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
         ? `, cache verified ${verify.checked} jar(s)${verify.sampled ? " (sampled)" : ""}, ${verify.missing} missing`
         : "";
       channel.appendLine(
-        `[aosp-nav] ${root}: injecting ${jars.length} jar(s) [${plan.mode}] from the ${fromCache ? "cached" : "scanned"} full list${plan.mode === "closure" ? ` (${plan.dropped} dropped, ${plan.unmapped.length} dangling)` : ""}${verifyNote} in ${Date.now() - startedAt} ms`
+        `[aosp-nav] ${root}: injecting ${jars.length} jar(s) [${plan.mode}] from the ${fromCache ? "cached" : "scanned"} full list${plan.mode === "closure" ? ` (${plan.dropped} dropped, ${plan.rescued} rescued, ${plan.unmapped.length} dangling)` : ""}${verifyNote} in ${Date.now() - startedAt} ms`
       );
     } catch (e) {
       status.statusFailed(root);
@@ -475,8 +478,8 @@ export function activate(ctx: vscode.ExtensionContext): void {
       if (s && js) {
         const msg = js.mode === "closure"
           ? vscode.l10n.t(
-              "[aosp-nav] {0} jars injected (closure: {1} dropped, {2} dangling, {3} unbuilt)",
-              s.jars.length, js.dropped, js.unmapped, js.starved
+              "[aosp-nav] {0} jars injected (closure: {1} dropped, {2} rescued by variant fallback, {3} dangling, {4} unbuilt)",
+              s.jars.length, js.dropped, js.rescued, js.unmapped, js.starved
             )
           : vscode.l10n.t(
               "[aosp-nav] {0} jars injected (full-list fallback: {1})",
@@ -600,7 +603,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
             ok: m.jarSource.mode === "closure" ? true : null,
             label: "jar source",
             detail: m.jarSource.mode === "closure"
-              ? `closure of the selected module dirs + libcore common set: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt; see log)`
+              ? `closure of the selected module dirs + libcore common set: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.rescued} rescued by variant fallback, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt; see log)`
               : `full-list fallback (${m.jarSource.reason ?? "unspecified"})`,
           });
         }
