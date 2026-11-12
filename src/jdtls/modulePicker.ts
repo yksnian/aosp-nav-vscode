@@ -40,23 +40,25 @@ export const DEFAULT_ROOT_MODULES = ["frameworks/base/core/java", "frameworks/ba
  *  injection, so "nothing picked" is never an implicit injection branch: the
  *  checkbox state and the injected roots come from one source. Subdirectory
  *  windows never seed (they keep the auto selection). */
-export async function seedDefaultModuleSelection(root: string, log: (m: string) => void): Promise<void> {
+export async function seedDefaultModuleSelection(root: string, log: (m: string) => void): Promise<boolean> {
   const rootWindow = (vscode.workspace.workspaceFolders ?? []).some(
     (f) => f.uri.scheme === "file" && path.resolve(f.uri.fsPath) === path.resolve(root)
   );
-  if (!rootWindow) return;
+  if (!rootWindow) return false;
   const insp = vscode.workspace.getConfiguration("aosp-nav").inspect<string[]>("java.sourceRootModules");
   // written value wins, including an explicit [] ("inject nothing")
-  if (insp?.workspaceValue !== undefined || insp?.globalValue !== undefined) return;
+  if (insp?.workspaceValue !== undefined || insp?.globalValue !== undefined) return false;
   try {
     await vscode.workspace
       .getConfiguration("aosp-nav")
       .update("java.sourceRootModules", DEFAULT_ROOT_MODULES, vscode.ConfigurationTarget.Workspace);
     log(`[aosp-nav] sourceRootModules: seeded ${DEFAULT_ROOT_MODULES.join(", ")}`);
+    return true;
   } catch (e) {
     // read-only settings: leave the config alone; the root window then injects
     // only hand-written roots and the failure stays in the output channel
     log(`[aosp-nav] sourceRootModules: could not write default selection: ${e}`);
+    return false;
   }
 }
 

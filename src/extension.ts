@@ -81,6 +81,14 @@ interface SessionMeta {
     commonStarved: string[];
     /** the common set also carried the test-support modules */
     testSelection: boolean;
+    /** duplicate-provider stubs could not be dropped (no framework.jar /
+     *  core-all.jar in the list) */
+    stubsKept: boolean;
+    /** module dirs the injected classpath was derived from */
+    modules: string[];
+    /** where that set came from: written config, seeded defaults, the window
+     *  folder's auto selection, or nothing at all */
+    moduleSource: "explicit" | "default" | "auto" | "none";
     /** modules auto-selected for a subtree window (absent when explicit) */
     auto?: number;
   };
@@ -347,7 +355,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       // checked state and the injected roots always come from the same config.
       // Runs while the session is still "scanning", so the config-change
       // listener skips this root and no duplicate pass is scheduled.
-      await seedDefaultModuleSelection(root, (m) => channel.appendLine(m));
+      const seededDefaults = await seedDefaultModuleSelection(root, (m) => channel.appendLine(m));
       // Plan D jar source: the dependency closure of the selected modules ∪ a
       // small common set (libcore), from the soong build index — instead of
       // the full .intermediates walk. The full list stays in the cache and
@@ -387,7 +395,19 @@ export function activate(ctx: vscode.ExtensionContext): void {
           dropped: plan.dropped,
           commonStarved: plan.commonStarved,
           testSelection: plan.testSelection,
+          stubsKept: plan.stubsKept,
           auto: plan.auto,
+          modules: plan.modules,
+          // where the effective module set came from — the config alone is not
+          // the answer for a subtree window (auto selection) or a root window
+          // whose defaults were seeded on this very run
+          moduleSource: plan.auto !== undefined
+            ? "auto"
+            : plan.modules.length === 0
+              ? "none"
+              : seededDefaults
+                ? "default"
+                : "explicit",
         };
       }
       // kotlin channel: same jar list, fed to fwcd kotlin-language-server
@@ -676,12 +696,15 @@ export function activate(ctx: vscode.ExtensionContext): void {
           const commonLabel = m.jarSource.testSelection
             ? "common set (libcore + annotations + test support)"
             : "common set (libcore + annotations)";
+          const stubNote = m.jarSource.stubsKept
+            ? "; conflict stubs kept (no framework.jar/core-all.jar in the list, so android.* has no other provider)"
+            : "";
           lines.push({
-            ok: m.jarSource.mode === "closure" ? cs.length === 0 : null,
+            ok: m.jarSource.mode === "closure" ? cs.length === 0 && !m.jarSource.stubsKept : null,
             label: "jar source",
             detail: m.jarSource.mode === "closure"
-              ? `closure${m.jarSource.auto ? ` (auto ${m.jarSource.auto} module(s) for this folder)` : " of the selected module dirs"} + ${commonLabel}: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.rescued} rescued by variant fallback, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt${csNote})`
-              : `full-list fallback (${m.jarSource.reason ?? "unspecified"})`,
+              ? `closure${m.jarSource.auto ? ` (auto ${m.jarSource.auto} module(s) for this folder)` : " of the selected module dirs"} + ${commonLabel}: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.rescued} rescued by variant fallback, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt${csNote})${stubNote}`
+              : `full-list fallback (${m.jarSource.reason ?? "unspecified"})${stubNote}`,
           });
         }
       }
@@ -739,15 +762,31 @@ export function activate(ctx: vscode.ExtensionContext): void {
             : "open the AOSP root as the workspace folder to get cross-module source navigation",
         });
       }
-      // module picks: config read only (loading the 59 MB build index here
-      // would stall the panel, so derived roots are not counted)
-      const mods = cfgNow.javaSourceRootModules;
+      // module picks: report what was ACTUALLY used, not the raw config. A
+      // subtree window writes nothing yet auto-selects its modules, and a root
+      // window may have had the defaults seeded on the last scan — both used to
+      // read as "none selected" here.
+      const js = s?.meta?.jarSource;
+      const mods = js?.modules ?? [];
+      const injected = s?.jars.length ?? 0;
+      const modList = (list: string[]) =>
+        list.length <= 3 ? list.join(", ") : `${list.slice(0, 3).join(", ")} +${list.length - 3}`;
+      let modDetail: string;
+      if (mods.length === 0) {
+        modDetail = injected === 0
+          ? "none (nothing injected)"
+          : "none configured; full jar list injected (see jar source)";
+      } else if (js?.moduleSource === "auto") {
+        modDetail = `not configured; auto-selected ${mods.length} module(s) for this folder (${modList(mods)})`;
+      } else if (js?.moduleSource === "default") {
+        modDetail = `not configured; defaults applied (${mods.length} module(s): ${modList(mods)})`;
+      } else {
+        modDetail = `${mods.length} selected (${modList(mods)})`;
+      }
       lines.push({
-        ok: null,
+        ok: mods.length > 0 ? true : injected === 0 ? false : null,
         label: "sourceRootModules",
-        detail: mods.length
-          ? `${mods.length} selected: ${mods.join(", ")} (roots derived from out/soong/module_bp_java_deps.json)`
-          : "none selected (AOSP: Select Java Source Roots by Module)",
+        detail: js ? modDetail : `${cfgNow.javaSourceRootModules.length} configured (no scan yet)`,
       });
       // C/C++ (clangd): read-only status; never resolves files or writes CDB here
       const cppCfg = getConfig().cpp;

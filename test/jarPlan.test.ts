@@ -47,9 +47,7 @@ describe("computeInjectedJars", () => {
     expect(r.reason).toContain("module_bp_java_deps.json");
   });
 
-  it("puts the common set first on the fallback path, rest untouched", async () => {
-    // no index at all ⇒ the light fallback branch; common jars are recognised
-    // by file name (out/soong/.intermediates/**/<module>/<variant>/<kind>/<module>.jar)
+  it("keeps the scanned order on the fallback path", async () => {
     const root = await makeRoot(null, []);
     const stubs =
       "/x/out/soong/.intermediates/frameworks/base/api/android_stubs_current/android_common/turbine-combined/android_stubs_current.jar";
@@ -61,8 +59,36 @@ describe("computeInjectedJars", () => {
     const full = [stubs, coreOj, sdk, annotations];
     const r = await computeInjectedJars(root, [], full, NOOP);
     expect(r.mode).toBe("fallback");
-    expect(r.jars).toEqual([coreOj, annotations, stubs, sdk]);
-    expect(r.jars.length).toBe(full.length);
+    // no superset jar ⇒ the stubs stay, and nothing is reordered
+    expect(r.jars).toEqual(full);
+    expect(r.stubsKept).toBe(true);
+  });
+
+  it("drops the conflicting API stubs once a superset provider remains", async () => {
+    const root = await makeRoot(null, []);
+    const stubs =
+      "/x/out/soong/.intermediates/frameworks/base/api/android_stubs_current/android_common/turbine-combined/android_stubs_current.jar";
+    const sysStubs =
+      "/x/out/soong/.intermediates/frameworks/base/api/android_system_stubs_current/android_common/turbine-combined/android_system_stubs_current.jar";
+    const privateAnnotations =
+      "/x/out/soong/.intermediates/tools/metalava/private-stub-annotations-jar/android_common/javac/private-stub-annotations-jar.jar";
+    const framework =
+      "/x/out/soong/.intermediates/frameworks/base/framework/android_common/turbine-combined/framework.jar";
+    const annotations =
+      "/x/out/soong/.intermediates/frameworks/libs/modules-utils/java/framework-annotations-lib/linux_glibc_common/javac/framework-annotations-lib.jar";
+    const r = await computeInjectedJars(root, [], [stubs, sysStubs, privateAnnotations, framework, annotations], NOOP);
+    expect(r.jars).toEqual([framework, annotations]);
+    expect(r.stubsKept).toBe(false);
+  });
+
+  it("keeps the stubs when no superset provider would remain, and says so", async () => {
+    const root = await makeRoot(null, []);
+    const stubs =
+      "/x/out/soong/.intermediates/frameworks/base/api/android_stubs_current/android_common/turbine-combined/android_stubs_current.jar";
+    const sdk = "/x/prebuilts/sdk/current/public/android.jar";
+    const r = await computeInjectedJars(root, [], [stubs, sdk], NOOP);
+    expect(r.jars).toEqual([stubs, sdk]);
+    expect(r.stubsKept).toBe(true);
   });
 
   it("falls back when the index is older than the last build", async () => {
@@ -96,7 +122,7 @@ describe("computeInjectedJars", () => {
     expect(r.reason).toContain("0 existing jars");
   });
 
-  it("returns the closure ∪ common set as absolute paths, common set first", async () => {
+  it("returns the closure ∪ common set as absolute paths", async () => {
     const root = await makeRoot(
       {
         app: {
@@ -113,20 +139,18 @@ describe("computeInjectedJars", () => {
     const logs: string[] = [];
     const r = await computeInjectedJars(root, ["frameworks/base/core/java"], FULL, (m) => logs.push(m));
     expect(r.mode).toBe("closure");
-    // common jars first (so a public definition wins over the stub copies in
-    // android_stubs_current.jar), each partition keeping its sorted order
     expect(r.jars).toEqual([
-      path.join(root, "out/j/core-libart.jar"),
-      path.join(root, "out/j/core-oj.jar"),
       path.join(root, "out/j/a.jar"),
       path.join(root, "out/j/b.jar"),
+      path.join(root, "out/j/core-libart.jar"),
+      path.join(root, "out/j/core-oj.jar"),
     ]);
     expect(r.unmapped).toEqual([]);
     expect(r.starved).toBe(0);
     expect(logs.some((l) => l.includes("closure of 1 module"))).toBe(true);
   });
 
-  it("keeps the common-first order stable across identical runs", async () => {
+  it("keeps the jar list stable across identical runs", async () => {
     const root = await makeRoot(
       {
         app: {
@@ -138,10 +162,6 @@ describe("computeInjectedJars", () => {
         zeta: { path: ["p"], jars: ["out/j/z.jar"] },
         "core-oj": { path: ["libcore"], jars: ["out/j/core-oj.jar"] },
         "core-libart": { path: ["libcore"], jars: ["out/j/core-libart.jar"] },
-        "framework-annotations-lib": {
-          path: ["frameworks/libs/modules-utils/java"],
-          jars: ["out/j/framework-annotations-lib.jar"],
-        },
       },
       [
         "out/j/a.jar",
@@ -149,7 +169,6 @@ describe("computeInjectedJars", () => {
         "out/j/z.jar",
         "out/j/core-oj.jar",
         "out/j/core-libart.jar",
-        "out/j/framework-annotations-lib.jar",
       ]
     );
     const first = await computeInjectedJars(root, ["frameworks/base/core/java"], FULL, NOOP);
@@ -157,15 +176,11 @@ describe("computeInjectedJars", () => {
     // byte-identical list ⇒ settingsChannel's sameList short-circuit holds and
     // no needless setRawClasspath is issued
     expect(second.jars).toEqual(first.jars);
-    const names = first.jars.map((j) => path.basename(j));
-    // every common jar precedes every non-common jar, and neither partition is
-    // reordered relative to the sorted baseline
-    expect(names).toEqual([
-      "core-libart.jar",
-      "core-oj.jar",
-      "framework-annotations-lib.jar",
+    expect(first.jars.map((j) => path.basename(j))).toEqual([
       "a.jar",
       "b.jar",
+      "core-libart.jar",
+      "core-oj.jar",
       "z.jar",
     ]);
   });

@@ -72,6 +72,9 @@ interface ClosureCacheEntry {
   /** modules auto-selected for a subtree window (null for an explicit pick) */
   auto: number | null;
   testSelection: boolean;
+  /** duplicate-provider stubs were kept because the list has no
+   *  framework.jar/core-all.jar to cover android.* (surfaced in diagnostics) */
+  stubsKept: boolean;
 }
 
 const CLOSURE_CACHE_LIMIT = 6;
@@ -138,6 +141,12 @@ export interface JarPlanResult {
   /** true when the common set also carried COMMON_TEST_MODULES (diagnostics
    *  wording only) */
   testSelection: boolean;
+  /** duplicate-provider stubs were kept because the list has no
+   *  framework.jar/core-all.jar to cover android.* (surfaced in diagnostics) */
+  stubsKept: boolean;
+  /** module dirs the classpath was actually derived from (seeds after the auto
+   *  selection step) — diagnostics must report this, not the raw config */
+  modules: string[];
 }
 
 /** Options for windows that have no explicit module selection.
@@ -152,28 +161,42 @@ export interface JarPlanOptions {
   importExclusions?: readonly string[];
 }
 
-/** AOSP lays a module's jars out as
- *  `out/soong/.intermediates/<module path>/<name>/<variant>/<kind>/<name>.jar`,
- *  so the file name alone identifies the module — no need to load the 59 MB
- *  index on the fallback path. */
-function commonFirst(jars: readonly string[], names: readonly string[]): string[] {
-  const wanted = new Set(names.map((n) => `${n}.jar`));
-  const common: string[] = [];
-  const rest: string[] = [];
-  for (const j of jars) (wanted.has(path.basename(j)) ? common : rest).push(j);
-  return [...common, ...rest];
+/** API-surface stubs that duplicate android.* while declaring
+ *  android.annotation.* WITHOUT `public`.
+ *
+ *  House policy for duplicate definitions: drop the weaker provider from the
+ *  data, never rely on classpath order. redhat.java rewrites
+ *  java.project.referencedLibraries into .classpath in its own order (measured
+ *  on a real tree: 0 of 333 positions preserved) and also drops entries, so
+ *  any ordering we emit is advisory at best. Handle the next duplicate-definition
+ *  problem the same way: identify the weaker provider and remove it. */
+const CONFLICT_STUBS = new Set([
+  "android_stubs_current.jar",
+  "android_system_stubs_current.jar",
+  "private-stub-annotations-jar.jar",
+]);
+/** providers that must remain before the stubs may be dropped (a degenerate
+ *  list could otherwise lose android.* entirely) */
+const SUPERSET_JARS = new Set(["framework.jar", "core-all.jar"]);
+
+interface StubDropResult {
+  jars: string[];
+  /** conflict stubs were present but kept because no superset jar was left to
+   *  cover android.* — surfaced in diagnostics rather than done silently */
+  stubsKept: boolean;
 }
 
-function fallback(
-  fullJars: readonly string[],
-  reason: string,
-  log: (m: string) => void,
-  commonNames: readonly string[] = COMMON_MODULES
-): JarPlanResult {
-  // Same classpath-order requirement as the closure path: the public
-  // android.annotation.* definitions must precede the non-public stub copies.
-  // The rest keeps the scanned order untouched.
-  const jars = commonFirst(fullJars, commonNames);
+function dropConflictStubs(jars: readonly string[]): StubDropResult {
+  const hasSuperset = jars.some((j) => SUPERSET_JARS.has(path.basename(j)));
+  if (!hasSuperset) {
+    const stubsKept = jars.some((j) => CONFLICT_STUBS.has(path.basename(j)));
+    return { jars: [...jars], stubsKept };
+  }
+  return { jars: jars.filter((j) => !CONFLICT_STUBS.has(path.basename(j))), stubsKept: false };
+}
+
+function fallback(fullJars: readonly string[], reason: string, log: (m: string) => void): JarPlanResult {
+  const { jars, stubsKept } = dropConflictStubs(fullJars);
   log(`[aosp-nav] jarPlan: full-list fallback (${reason}) — ${jars.length} jars`);
   return {
     jars,
@@ -188,6 +211,8 @@ function fallback(
     commonStarved: [],
     visited: 0,
     testSelection: false,
+    stubsKept,
+    modules: [],
   };
 }
 
@@ -201,14 +226,8 @@ export async function computeInjectedJars(
   let seeds = [...new Set(selectedModuleDirs.map((s) => s.trim()).filter(Boolean))];
   /** modules auto-selected for this window folder (null: explicit selection) */
   let auto: number | null = null;
-  /** common-set module names for the current selection (test trees also get
-   *  the test-support jars); resolved on demand so every fallback branch —
-   *  including the ones that return before the index is loaded — can put the
-   *  common jars first. */
-  const namesFor = (): readonly string[] =>
-    isTestSelection(seeds, opts.folder) ? [...COMMON_MODULES, ...COMMON_TEST_MODULES] : COMMON_MODULES;
   if (seeds.length === 0 && (!opts.folder || path.resolve(opts.folder) === path.resolve(root))) {
-    return fallback(fullJars, "no module selection", log, namesFor());
+    return fallback(fullJars, "no module selection", log);
   }
 
   const depsFile = path.join(root, "out", "soong", "module_bp_java_deps.json");
@@ -229,7 +248,7 @@ export async function computeInjectedJars(
     mtime(path.join(root, "out", "soong", "build.ninja")),
   ]);
   if (depsM !== null && ninjaM !== null && ninjaM > depsM) {
-    return fallback(fullJars, "module index is older than the last build", log, namesFor());
+    return fallback(fullJars, "module index is older than the last build", log);
   }
 
   // Subtree window (Connectivity, NetworkStack, ...) with no explicit
@@ -240,12 +259,12 @@ export async function computeInjectedJars(
   if (seeds.length === 0) {
     index = await loadJavaModuleIndex(root, log);
     if (!index) {
-      return fallback(fullJars, "no module selection and the build index is unavailable", log, namesFor());
+      return fallback(fullJars, "no module selection and the build index is unavailable", log);
     }
     const scopedExcl = scopedImportExclusions(opts.importExclusions ?? [], [opts.folder!]);
     seeds = [...new Set(autoModulesForFolder(index, root, opts.folder!, scopedExcl))];
     if (seeds.length === 0) {
-      return fallback(fullJars, "no module selection and no module dirs under the window folder", log, namesFor());
+      return fallback(fullJars, "no module selection and no module dirs under the window folder", log);
     }
     auto = seeds.length;
     log(
@@ -296,13 +315,15 @@ export async function computeInjectedJars(
         visited: cached.visited,
         auto: cached.auto ?? undefined,
         testSelection: cached.testSelection,
+        stubsKept: cached.stubsKept,
+        modules: [...seeds],
       };
     }
     closureCache.delete(cacheKey);
   }
 
   if (!index) index = await loadJavaModuleIndex(root, log);
-  if (!index) return fallback(fullJars, `${depsFile} not found or not valid JSON`, log, namesFor());
+  if (!index) return fallback(fullJars, `${depsFile} not found or not valid JSON`, log);
 
   const r = await closureJars(index, seeds, {
     commonModules: testSel
@@ -351,23 +372,9 @@ export async function computeInjectedJars(
   }
 
   const allRel = [...r.jars, ...commonRescued];
-  if (allRel.length === 0) return fallback(fullJars, "closure produced 0 existing jars", log, namesFor());
+  if (allRel.length === 0) return fallback(fullJars, "closure produced 0 existing jars", log);
 
-  // Common-set jars go FIRST. Several AOSP stub jars (android_stubs_current,
-  // android_system_stubs_current, private-stub-annotations-jar) also define
-  // android.annotation.* but without `public` (javap-verified on a real tree),
-  // and JDT resolves a duplicated FQN from the first classpath entry it meets.
-  // Alphabetical order put .../frameworks/base/api/... before
-  // .../frameworks/libs/modules-utils/..., so the non-public copies won and
-  // every NonNull/Nullable reference became IProblem.NotVisibleType.
-  // Both partitions keep their existing (sorted) order, so the result stays
-  // deterministic: same module set ⇒ byte-identical list ⇒ no needless
-  // setRawClasspath.
-  const commonJars = new Set<string>([...r.commonJars, ...commonRescued]);
-  const ordered = [
-    ...allRel.filter((rel) => commonJars.has(rel)),
-    ...allRel.filter((rel) => !commonJars.has(rel)),
-  ];
+  const { jars: ordered, stubsKept } = dropConflictStubs(allRel);
 
   const rescued = r.rescued + commonRescued.length;
   const label =
@@ -387,6 +394,7 @@ export async function computeInjectedJars(
     visited: r.visited,
     auto,
     testSelection: testSel,
+    stubsKept,
   });
   if (closureCache.size > CLOSURE_CACHE_LIMIT) {
     closureCache.delete(closureCache.keys().next().value!);
@@ -404,5 +412,7 @@ export async function computeInjectedJars(
     visited: r.visited,
     auto: auto ?? undefined,
     testSelection: testSel,
+    stubsKept,
+    modules: [...seeds],
   };
 }

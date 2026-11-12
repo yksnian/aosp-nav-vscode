@@ -77,11 +77,6 @@ export interface ClosureResult {
    *  turbine-combined while the tree built the javac/combined variants); the
    *  caller may rescue them with a direct disk lookup */
   commonStarved: string[];
-  /** every jar that came from a common module (index variant or variant
-   *  fallback). The caller puts these first on the classpath: AOSP stub jars
-   *  define android.annotation.* without `public`, and JDT resolves a duplicate
-   *  FQN from the first entry, so a public definition must win. */
-  commonJars: string[];
   /** module names visited by the traversal (informational) */
   visited: number;
 }
@@ -107,10 +102,9 @@ export async function closureJars(
   const collect = async (
     name: string,
     e: { jars: string[]; path: string }
-  ): Promise<{ got: number; rescued: boolean; added: string[] }> => {
+  ): Promise<{ got: number; rescued: boolean }> => {
     let got = 0;
     const rejected: string[] = [];
-    const added: string[] = [];
     for (const rel of e.jars) {
       // tree-relative paths only; subject to the caller's disk check
       if (rel.startsWith("/") || rel.includes("..")) {
@@ -122,7 +116,6 @@ export async function closureJars(
         continue;
       }
       jars.add(rel);
-      added.push(rel);
       got++;
     }
     // variant fallback: every index entry is missing, but this tree may have
@@ -132,11 +125,11 @@ export async function closureJars(
       const alt = await opts.rescue(name, e);
       if (alt && !alt.startsWith("/") && !alt.includes("..")) {
         jars.add(alt);
-        return { got: 1, rescued: true, added: [alt] };
+        return { got: 1, rescued: true };
       }
     }
     for (const r of rejected) dropped.add(r);
-    return { got, rescued: false, added };
+    return { got, rescued: false };
   };
 
   // BFS from every module living in a selected dir (queue grows in place)
@@ -167,7 +160,6 @@ export async function closureJars(
   }
 
   // common set: jars join unconditionally, module never counts as a seed
-  const commonJars: string[] = [];
   for (const name of opts.commonModules ?? []) {
     const e = index.byName.get(name);
     if (!e) {
@@ -175,7 +167,6 @@ export async function closureJars(
       continue;
     }
     const c = await collect(name, e);
-    commonJars.push(...c.added);
     if (c.rescued) rescued++;
     else if (c.got === 0) commonStarved.push(name);
   }
@@ -189,7 +180,6 @@ export async function closureJars(
     unknownSeeds: [...unknownSeeds].sort(),
     missingCommon,
     commonStarved,
-    commonJars,
     visited: visited.size,
   };
 }
