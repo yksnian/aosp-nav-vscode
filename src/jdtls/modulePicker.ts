@@ -22,6 +22,9 @@ import {
  *  `aosp-nav.java.sourceRoots` so they stay user-editable. */
 
 const OFFERED_KEY = "aosp-nav.modulePickerOffered";
+/** roots this plugin appended to aosp-nav.java.sourceRoots (workspace layer),
+ *  so Reset can remove them without touching hand-written entries */
+const OWN_EXTRA_ROOTS_KEY = "aosp-nav.ownExtraSourceRoots";
 
 /** Same key the eclipse guard writes (eclipseGuard.ts OWN_EXCL_KEY): the
  *  exclusion entries this extension added itself. Read here only to label the
@@ -286,7 +289,7 @@ export async function selectJavaSourceRootsByModule(
     .update("java.sourceRootModules", pickedPaths, vscode.ConfigurationTarget.Workspace);
   log(`[aosp-nav] sourceRootModules: ${pickedPaths.length} module(s) selected`);
 
-  await offerThirdPartyRoots(index, pickedPaths, root, folders, scoped, importExclusions);
+  await offerThirdPartyRoots(ctx, index, pickedPaths, root, folders, scoped, importExclusions);
   // apply here (not only via the aosp-nav config-change listener) because the
   // listener only re-runs roots that already have a session; when the picker
   // is used before any java file was opened, nothing else would apply. The
@@ -299,6 +302,7 @@ export async function selectJavaSourceRootsByModule(
  *  into the workspace layer of `aosp-nav.java.sourceRoots`, where the user
  *  can edit them later like any manual entry. */
 async function offerThirdPartyRoots(
+  ctx: vscode.ExtensionContext,
   index: Awaited<ReturnType<typeof loadJavaModuleIndex>>,
   pickedPaths: string[],
   root: string,
@@ -333,4 +337,18 @@ async function offerThirdPartyRoots(
   await vscode.workspace
     .getConfiguration("aosp-nav")
     .update("java.sourceRoots", [...effective, ...picked], vscode.ConfigurationTarget.Workspace);
+  const own = ctx.workspaceState.get<string[]>(OWN_EXTRA_ROOTS_KEY) ?? [];
+  await ctx.workspaceState.update(OWN_EXTRA_ROOTS_KEY, [...new Set([...own, ...picked])]);
+}
+
+/** Removes only the roots offerThirdPartyRoots() appended; hand-written
+ *  java.sourceRoots entries are left alone. */
+export async function clearOwnExtraSourceRoots(ctx: vscode.ExtensionContext): Promise<void> {
+  const own = ctx.workspaceState.get<string[]>(OWN_EXTRA_ROOTS_KEY);
+  if (!own || own.length === 0) return;
+  const conf = vscode.workspace.getConfiguration("aosp-nav");
+  const cur = conf.get<string[]>("java.sourceRoots") ?? [];
+  const next = cur.filter((r) => !own.includes(r));
+  await conf.update("java.sourceRoots", next.length > 0 ? next : undefined, vscode.ConfigurationTarget.Workspace);
+  await ctx.workspaceState.update(OWN_EXTRA_ROOTS_KEY, undefined);
 }

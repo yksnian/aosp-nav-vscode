@@ -31,6 +31,7 @@ import { resolveSourceRoots } from "./jdtls/sourceRootsPlan";
 import {
   maybeOfferModulePicker,
   seedDefaultModuleSelection,
+  clearOwnExtraSourceRoots,
   selectJavaSourceRootsByModule,
 } from "./jdtls/modulePicker";
 import { computeInjectedJars } from "./jdtls/jarPlan";
@@ -601,6 +602,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       await vscode.workspace
         .getConfiguration("aosp-nav")
         .update("java.sourceRootModules", undefined, vscode.ConfigurationTarget.Workspace);
+      await clearOwnExtraSourceRoots(ctx);
       void vscode.window.showInformationMessage(vscode.l10n.t("[aosp-nav] settings written by the plugin have been rolled back"));
     }),
     vscode.commands.registerCommand(
@@ -615,12 +617,13 @@ export function activate(ctx: vscode.ExtensionContext): void {
         crash = await probeCrash();
       } catch { /* keep the cached probe */ }
       const lines: DiagLine[] = [];
-      lines.push({ ok: null, label: "extension", detail: `${ctx.extension.packageJSON.version}` });
       const javaExt = vscode.extensions.getExtension("redhat.java");
       lines.push({
         ok: !!javaExt,
-        label: "redhat.java",
-        detail: javaExt ? `${javaExt.packageJSON.version} (${javaExt.isActive ? "active" : "inactive"})` : "NOT INSTALLED",
+        label: "versions",
+        detail: `aosp-nav ${ctx.extension.packageJSON.version}, redhat.java ${
+          javaExt ? `${javaExt.packageJSON.version} (${javaExt.isActive ? "active" : "inactive"})` : "NOT INSTALLED"
+        }`,
       });
       const cfgNow = getConfig();
       // The active editor is not always a usable seed: decompiled sources are
@@ -656,18 +659,20 @@ export function activate(ctx: vscode.ExtensionContext): void {
           rootSource = "from last session";
         }
       }
+      const s = root ? sessions.get(root) : undefined;
+      /** the window's folder IS the tree root (the only place plugin-wide
+       *  switches such as autobuild / importer flags are allowed to matter) */
+      const isRootWindow =
+        !!root &&
+        (vscode.workspace.workspaceFolders ?? []).some(
+          (f) => f.uri.scheme === "file" && path.resolve(f.uri.fsPath) === path.resolve(root!)
+        );
       lines.push({
-        ok: !!root,
+        ok: s ? s.phase === "ready" : !!root,
         label: "root",
         detail: root
-          ? `${root} (${rootSource ?? "from active editor"})`
+          ? `${root} (${rootSource ?? "from active editor"})${s ? ` — ${s.phase}, ${s.jars.length} jars` : ", no session yet"}`
           : `not detected (${rootSource ?? "no AOSP file open and no AOSP workspace folder"})`,
-      });
-      const s = root ? sessions.get(root) : undefined;
-      lines.push({
-        ok: s ? s.phase === "ready" : null,
-        label: "state",
-        detail: s ? `${s.phase}, jars=${s.jars.length}` : "no session (no java file from this tree opened yet)",
       });
       if (s?.meta) {
         const m = s.meta;
@@ -699,33 +704,26 @@ export function activate(ctx: vscode.ExtensionContext): void {
           const stubNote = m.jarSource.stubsKept
             ? "; conflict stubs kept (no framework.jar/core-all.jar in the list, so android.* has no other provider)"
             : "";
+          // only when the two disagree: the written array is a separate fact
+          // from the planned closure (a stale write, or someone else writing it)
+          const rlNow = vscode.workspace.getConfiguration("java").get<unknown>("project.referencedLibraries");
+          const rlNowCount = Array.isArray(rlNow)
+            ? rlNow.length
+            : (rlNow as { include?: string[] })?.include?.length ?? 0;
+          const rlNote =
+            m.jarSource.mode === "closure" && rlNowCount !== s.jars.length
+              ? `; java.project.referencedLibraries holds ${rlNowCount} entries (not this list — reload or check the write warning)`
+              : "";
           lines.push({
-            ok: m.jarSource.mode === "closure" ? cs.length === 0 && !m.jarSource.stubsKept : null,
+            ok: m.jarSource.mode === "closure" ? cs.length === 0 && !m.jarSource.stubsKept && !rlNote : null,
             label: "jar source",
             detail: m.jarSource.mode === "closure"
-              ? `closure${m.jarSource.auto ? ` (auto ${m.jarSource.auto} module(s) for this folder)` : " of the selected module dirs"} + ${commonLabel}: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.rescued} rescued by variant fallback, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt${csNote})${stubNote}`
+              ? `closure${m.jarSource.auto ? ` (auto ${m.jarSource.auto} module(s) for this folder)` : " of the selected module dirs"} + ${commonLabel}: ${s.jars.length} jars (${m.jarSource.dropped} dropped, ${m.jarSource.rescued} rescued by variant fallback, ${m.jarSource.unmapped} dangling, ${m.jarSource.starved} unbuilt${csNote})${stubNote}${rlNote}`
               : `full-list fallback (${m.jarSource.reason ?? "unspecified"})${stubNote}`,
           });
         }
       }
-      if (root) {
-        // cache freshness: the same stamp/validity the scan path relies on
-        const cacheFile = path.join(ctx.globalStorageUri.fsPath, `jars-${djb2(root)}.json`);
-        try {
-          const raw = JSON.parse(await fs.readFile(cacheFile, "utf8")) as CacheFile;
-          lines.push({
-            ok: null,
-            label: "cache",
-            detail: `v${raw.version}, ${raw.jars.length} jars, generated ${raw.generatedAt}, build ${raw.buildMtimeMs ?? "(none)"}`,
-          });
-        } catch {
-          lines.push({ ok: null, label: "cache", detail: "no cache (next open rescans)" });
-        }
-      }
       const jc = vscode.workspace.getConfiguration("java");
-      const rl = jc.get<unknown>("project.referencedLibraries");
-      const rlCount = Array.isArray(rl) ? rl.length : (rl as { include?: string[] })?.include?.length ?? 0;
-      lines.push({ ok: rlCount > 0, label: "referencedLibraries", detail: `${rlCount} entries` });
       // sourcePaths: config read only. java.project.getAll/getClasspaths are
       // deliberately not called anywhere — they block for minutes here.
       const sp = jc.get<string[]>("project.sourcePaths") ?? [];
@@ -817,22 +815,17 @@ export function activate(ctx: vscode.ExtensionContext): void {
           action: cs.cdbDir ? `cdb: ${cs.cdbDir}` : undefined,
         });
         const clangdPath = clangdPathSetting();
-        lines.push({
-          ok: clangdPath ? true : null,
-          label: "clangd.path",
-          detail: clangdPath
-            ? clangdPath
-            : `(not user-set; clangd falls back to "clangd" on PATH)${cand ? `; AOSP prebuilt: ${cand}` : ""}`,
-          action: !clangdPath && cand ? "set 'clangd.path' to the AOSP prebuilt (extension bundles none)" : undefined,
-        });
         const ca = vscode.workspace.getConfiguration("clangd").get<string[]>("arguments") ?? [];
         // Check the actual setting: cs.hasCdbFlag reflects the same array, but
         // printing the flag makes a stale/empty diagnostics root obvious.
         const cdbArg = ca.find((a) => a.startsWith("--compile-commands-dir="));
         lines.push({
-          ok: cdbArg ? true : null,
-          label: "clangd.arguments",
-          detail: `${ca.length} entries${cdbArg ? `, ${cdbArg}` : ", no --compile-commands-dir"}`,
+          ok: clangdPath ? true : null,
+          label: "clangd",
+          detail: `${clangdPath ?? '(not set; falls back to "clangd" on PATH)'}${
+            !clangdPath && cand ? ` (AOSP prebuilt: ${cand})` : ""
+          }, ${ca.length} args${cdbArg ? `, ${cdbArg}` : ", no --compile-commands-dir"}`,
+          action: !clangdPath && cand ? "set 'clangd.path' to the AOSP prebuilt (extension bundles none)" : undefined,
         });
         if (cs.origin === "cc_deps") {
           lines.push({
@@ -844,71 +837,83 @@ export function activate(ctx: vscode.ExtensionContext): void {
       }
       // the switches live in the layer aosp-nav.settingsScope selects, so name
       // it — "false" with no layer is not actionable when debugging
-      for (const sub of ["import.gradle.enabled", "import.maven.enabled"]) {
-        const insp = jc.inspect<unknown>(sub);
-        const where =
-          insp?.workspaceValue === false ? "workspace" : insp?.globalValue === false ? "global" : "unset";
-        lines.push({ ok: jc.get(sub) === false, label: sub, detail: `${String(jc.get(sub))} (${where})` });
+      {
+        const where = (sub: string) => {
+          const insp = jc.inspect<unknown>(sub);
+          return insp?.workspaceValue === false ? "workspace" : insp?.globalValue === false ? "global" : "unset";
+        };
+        const g = jc.get<boolean>("import.gradle.enabled");
+        const mvn = jc.get<boolean>("import.maven.enabled");
+        // Only the root window is affected: a sub-tree window has no gradle /
+        // maven project to import. Hide the untouched defaults there.
+        if (isRootWindow || g === false || mvn === false) {
+          lines.push({
+            ok: g === false && mvn === false,
+            label: "java import",
+            detail: `gradle=${String(g)} (${where("import.gradle.enabled")}), maven=${String(mvn)} (${where(
+              "import.maven.enabled"
+            )})`,
+          });
+        }
       }
       // kotlin channel
       const kEnabled = getConfig().kotlinEnabled;
       const kExt = vscode.extensions.getExtension("fwcd.kotlin");
+      const kp = root && kEnabled ? await probeKotlinChannel(root) : null;
       lines.push({
-        ok: kEnabled ? !!kExt : null,
+        ok: kEnabled ? (kExt ? (kp ? kp.script === "ours" || kp.script === "family-nvim" : null) : false) : null,
         label: "kotlin",
-        detail: `enabled=${kEnabled}, fwcd.kotlin=${kExt ? `${kExt.packageJSON.version} (${kExt.isActive ? "active" : "inactive"})` : "NOT INSTALLED"}`,
+        detail: kEnabled
+          ? `on, fwcd.kotlin=${kExt ? kExt.packageJSON.version : "NOT INSTALLED"}${
+              kp
+                ? kp.script === "ours"
+                  ? `, classpath script ours (${kp.jars} jars)`
+                  : kp.script === "family-nvim"
+                    ? ", classpath script family (aosp-nav.nvim), taken over on next injection"
+                    : kp.script === "user"
+                      ? ", classpath script user-managed (aosp-nav will not take over)"
+                      : ", classpath script not written"
+                : ""
+            }`
+          : "off (aosp-nav.kotlin.enabled)",
       });
-      if (root) {
-        const kp = await probeKotlinChannel(root);
-        lines.push({
-          ok: kp.script === "ours" ? true : kp.script === "family-nvim" ? true : kp.script === "user" ? false : null,
-          label: "kotlin classpath script",
-          detail: kp.script === "ours"
-            ? `ours, ${kp.jars} jars`
-            : kp.script === "family-nvim"
-              ? "family (aosp-nav.nvim) in place, taken over on next injection"
-              : kp.script === "user"
-                ? "user-managed, aosp-nav will not take over"
-                : "not written",
-        });
-      }
       const vmargs = vscode.workspace.getConfiguration("java").get<string>("jdt.ls.vmargs") ?? "";
-      lines.push({
-        ok: vmargs.includes("-Xmx"),
-        label: "jdt.ls.vmargs",
-        detail: vmargs || "(unset)",
-        action: vmargs.includes("-Xmx") ? undefined : "add e.g. java.jdt.ls.vmargs: -Xmx6G ... in user settings",
-      });
       lines.push(
         crash && crash.confirmed
           ? {
               ok: false,
-              label: "jdt.ls crash",
-              detail: `${crash.evidence}${crash.oomSample ? ` — ${crash.oomSample}` : ""}`,
-              action: "raise java.jdt.ls.vmargs (e.g. -Xmx6G); aosp-nav disables java.autobuild.enabled on large AOSP roots automatically",
+              label: "jdt.ls",
+              detail: `${crash.evidence}${crash.oomSample ? ` — ${crash.oomSample}` : ""}; vmargs: ${vmargs || "(unset)"}`,
+              action: "raise java.jdt.ls.vmargs (e.g. -Xmx6G)",
             }
           : {
-              ok: true,
-              label: "jdt.ls crash",
-              detail: "no heap dump / OutOfMemoryError trace in the language-server workspace",
+              ok: null,
+              label: "jdt.ls",
+              detail: `vmargs: ${vmargs || "(unset)"}`,
+              action: vmargs.includes("-Xmx") ? undefined : "add e.g. java.jdt.ls.vmargs: -Xmx6G in user settings",
             }
       );
       {
         const ab = currentAutobuildState(ctx);
         const origin =
           ab.source === "plugin" ? "set by aosp-nav"
-          : ab.source === "user-workspace" ? "user workspace setting"
-          : ab.source === "user-workspace-folder" ? "user workspace-folder setting"
-          : ab.source === "user-global" ? "user global setting"
+          : ab.source === "user-workspace" ? "your workspace setting"
+          : ab.source === "user-workspace-folder" ? "your workspace-folder setting"
+          : ab.source === "user-global" ? "your global setting"
           : "default (on)";
-        lines.push({
-          ok: ab.value === false ? true : null,
-          label: "java.autobuild.enabled",
-          detail: `${ab.value} (${origin})`,
-          action: ab.value
-            ? "left on: only a large AOSP root without an explicit value is changed"
-            : undefined,
-        });
+        // The default is on and the plugin only ever changes a large AOSP root,
+        // so on any other window the default says nothing the user can act on.
+        // A false value is always worth one line: it silently stops the Eclipse
+        // builder, and on a sub-tree window that is the user's own setting.
+        const showRow = ab.value === false;
+        if (showRow) {
+          lines.push({
+            ok: false,
+            label: "java.autobuild.enabled",
+            detail: `false (${origin}${isRootWindow ? "" : "; JDT will not rebuild on save"})`,
+            action: ab.source === "plugin" ? "undo with 'AOSP: Reset Plugin Settings'" : undefined,
+          });
+        }
       }
       // eclipse guard
       const pending = await isCleanPending(ctx);
@@ -939,8 +944,6 @@ export function activate(ctx: vscode.ExtensionContext): void {
       if (getLastReports().length === 0) {
         lines.push({ ok: null, label: "eclipse guard", detail: "not scanned yet (open an AOSP java file first)" });
       }
-      const excl = jc.get<string[]>("import.exclusions") ?? [];
-      lines.push({ ok: null, label: "import.exclusions", detail: `${excl.length} patterns` });
       printDiagnostics(channel, lines);
     })
   );
