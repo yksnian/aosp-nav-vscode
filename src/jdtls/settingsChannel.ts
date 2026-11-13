@@ -110,6 +110,16 @@ export async function applyReferencedLibraries(
         log("[aosp-nav] cleared own stale workspace-layer referencedLibraries (scope switched to global)");
       } catch { /* best effort */ }
     }
+    // A workspace-layer list that survived the clear above (authored by the
+    // user) still shadows the global write for this window — report it instead
+    // of claiming the jars are in effect.
+    const wsAfter = includeOf(
+      jc.inspect<{ include?: string[] } | string[]>("project.referencedLibraries")?.workspaceValue
+    );
+    if (wsAfter.length > 0 && !sameList(wsAfter, jars) && !sameSet(wsAfter, jars)) {
+      log("[aosp-nav] warn: a workspace-layer referencedLibraries list still shadows the global write; the injected jars are not in effect in this window");
+      return { changed: true, inEffect: false, written: jars.length };
+    }
   } else {
     await ctx.workspaceState.update(OWN_WS_KEY, jars);
   }

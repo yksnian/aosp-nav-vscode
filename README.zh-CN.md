@@ -21,7 +21,7 @@ aosp-nav 自动弥合这个鸿沟:
 ## 依赖
 
 - VSCode >= 1.95
-- [Java 语言支持](https://marketplace.visualstudio.com/items?itemName=redhat.java) (`redhat.java`)——通过 `extensionDependencies` 自动安装
+- [Java 语言支持](https://marketplace.visualstudio.com/items?itemName=redhat.java) (`redhat.java`)——请从插件市场安装 (运行时依赖, 插件不会自动安装)
 - 可选, Kotlin 跳转: [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`)——见 [Kotlin 支持](#kotlin-支持实验性)
 - 可选, C/C++ 跳转: [clangd](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd) (`llvm-vs-code-extensions.vscode-clangd`)。扩展不自带 clangd 二进制, 需把 `clangd.path` 指向 AOSP prebuilt (`prebuilts/clang/host/linux-x86/clang-*/bin/clangd`), 或接受插件的一次性提示
 - **已编译**的 AOSP 树 (存在 `out/soong/.intermediates`)
@@ -85,7 +85,7 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 | `aosp-nav.cpp.curatedIncludes` | 见下 | 仅 Android.bp 兜底层使用的 include 目录 (相对 AOSP 根, 不存在的会跳过) |
 | `aosp-nav.cpp.headerLibDepth` | `3` | Android.bp 兜底层中同文件 `header_libs` 的最大解析深度 |
 
-多仓库窗口说明: `global` 档下, 同一窗口打开不同子仓库的文件时注入 jar 的**并集** (重叠度本来就很高)。默认 `workspace` 档按仓库写入——每个子仓库用独立窗口打开即可获得严格的 per-repo classpath。
+多仓库窗口说明: `java.project.referencedLibraries` 是单值配置, `global` 档下同一窗口内不同子仓库的扫描会互相覆盖 jar 列表 (后写者胜)。默认 `workspace` 档按仓库写入——每个子仓库用独立窗口打开即可获得严格的 per-repo classpath。
 
 ## Java 源码跳转 (`java.project.sourcePaths`)
 

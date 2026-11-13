@@ -1,10 +1,11 @@
 /** Minimal trailing debouncer. Kept dependency-free so tests can drive it with
- *  fake timers. */
+ *  fake timers. The delay may be a getter — it is read at schedule() time, so
+ *  config changes take effect without rebuilding the debouncer. */
 export class Debouncer {
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
-    private readonly ms: number,
+    private readonly ms: number | (() => number),
     private readonly fn: () => void | Promise<void>
   ) {}
 
@@ -13,7 +14,7 @@ export class Debouncer {
     this.timer = setTimeout(() => {
       this.timer = null;
       void this.fn();
-    }, this.ms);
+    }, typeof this.ms === "function" ? this.ms() : this.ms);
   }
 
   cancel(): void {

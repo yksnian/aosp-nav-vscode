@@ -21,7 +21,7 @@ aosp-nav bridges that gap automatically:
 ## Requirements
 
 - VSCode >= 1.95
-- [Language Support for Java](https://marketplace.visualstudio.com/items?itemName=redhat.java) (`redhat.java`) — installed automatically via `extensionDependencies`
+- [Language Support for Java](https://marketplace.visualstudio.com/items?itemName=redhat.java) (`redhat.java`) — install it from the marketplace (a runtime requirement; the extension does not auto-install dependencies)
 - Optional, Kotlin navigation: [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`) — see [Kotlin support](#kotlin-support-experimental)
 - Optional, C/C++ navigation: [clangd](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.vscode-clangd) (`llvm-vs-code-extensions.vscode-clangd`). The extension bundles no clangd binary; point `clangd.path` at the AOSP prebuilt (`prebuilts/clang/host/linux-x86/clang-*/bin/clangd`), or accept the one-time suggestion from aosp-nav
 - A **compiled** AOSP tree (`out/soong/.intermediates` present)
@@ -85,7 +85,7 @@ Exclusion lists use **append** semantics by default: your entries are added afte
 | `aosp-nav.cpp.curatedIncludes` | see below | Include dirs (root-relative, missing ones skipped) used only by the Android.bp fallback tier |
 | `aosp-nav.cpp.headerLibDepth` | `3` | Max depth when resolving `header_libs` inside the same Android.bp (fallback tier only) |
 
-Notes on multi-repo windows: with the `global` scope, opening files from different sub-checkouts in one window injects the **union** of jars (they heavily overlap anyway). With the default `workspace` scope the list is written per repo — open each sub-checkout in its own window for strictly per-repo classpaths.
+Notes on multi-repo windows: `java.project.referencedLibraries` is a single value, so with the `global` scope the sub-checkouts scanned in one window overwrite each other's jar list (last write wins). With the default `workspace` scope the list is written per repo — open each sub-checkout in its own window for a strictly per-repo classpath.
 
 ### Java source navigation (`java.project.sourcePaths`)
 

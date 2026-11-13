@@ -72,6 +72,11 @@ interface RootState {
   entries: number;
   logged: boolean;
   suggested: boolean;
+  /** Per-file flag lookup cache, keyed by file path. Validated against the
+   *  mtime of out/soong/module_bp_cc_deps.json so a rebuild invalidates it;
+   *  only used on the cc_deps path (the bp fallback stays uncached — it is
+   *  rare and its inputs have no single stamp file). */
+  fileInfoCache: Map<string, { stamp: number; info: FileInfo | null }>;
 }
 
 const states = new Map<string, RootState>();
@@ -254,6 +259,16 @@ async function applyClangdArguments(
   return false;
 }
 
+/** mtime of out/soong/module_bp_cc_deps.json, or null when the file is absent
+ *  (cache is bypassed so the bp fallback stays live). */
+async function ccDepsStamp(root: string): Promise<number | null> {
+  try {
+    return (await fs.stat(path.join(root, "out/soong/module_bp_cc_deps.json"))).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 async function ensureRoot(
   ctx: vscode.ExtensionContext,
   log: (m: string) => void,
@@ -270,6 +285,7 @@ async function ensureRoot(
       entries: 0,
       logged: false,
       suggested: false,
+      fileInfoCache: new Map(),
     };
     states.set(root, state);
     if (o.origin !== "none") logLine(log, `${root}: origin=${o.origin} cdb=${o.cdbDir ?? "-"}`);
@@ -279,7 +295,12 @@ async function ensureRoot(
   // compdb is consumed natively by clangd; writing entries would be redundant.
   if (state.origin !== "compdb" && state.cdbDir) {
     try {
-      const info = await lookupFileInfo(root, file);
+      const stamp = await ccDepsStamp(root);
+      const cached = stamp !== null ? state.fileInfoCache.get(file) : undefined;
+      const info = cached && cached.stamp === stamp ? cached.info : await lookupFileInfo(root, file);
+      if (stamp !== null && (!cached || cached.stamp !== stamp)) {
+        state.fileInfoCache.set(file, { stamp, info });
+      }
       if (info) {
         const entry = buildEntry(root, file, info.args, info.compiler);
         const r = await ensureEntry(path.join(state.cdbDir, "compile_commands.json"), entry);
@@ -319,8 +340,7 @@ export function registerCppSupport(
   ctx: vscode.ExtensionContext,
   log: (m: string) => void
 ): vscode.Disposable {
-  const cfg = getConfig();
-  const restart = new Debouncer(cfg.cpp.restartDebounceMs, async () => {
+  const restart = new Debouncer(() => getConfig().cpp.restartDebounceMs, async () => {
     const ext = vscode.extensions.getExtension(CLANGD_EXTENSION);
     if (!ext?.isActive) return;
     logLine(log, "clangd.arguments changed → clangd.restart");
@@ -468,7 +488,7 @@ export async function cppStatus(
       origin = "cc_deps";
       cdbDir = managedCdbDir(ctx, root);
     }
-    s = { origin, cdbDir, module: null, entries: 0, logged: false, suggested: false };
+    s = { origin, cdbDir, module: null, entries: 0, logged: false, suggested: false, fileInfoCache: new Map() };
   }
   let entries = s.entries;
   if (s.cdbDir && s.origin !== "compdb") {

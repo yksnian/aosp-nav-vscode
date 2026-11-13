@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { detectAospRoot } from "../androidRoot";
 import { GuardReport, patternsFor, scanBlockers } from "./eclipseGuardScan";
+import { withExclusionLock } from "./compat";
 import { countBlockers, decideGuardOutcome } from "./guardState";
 import { ScanCancelledError, DEFAULT_WALK_CONCURRENCY } from "../infra/fsScan";
 import * as status from "../status";
@@ -82,27 +83,30 @@ function effectiveExclusions(): Set<string> {
 
 /** Merge our patterns into the workspace layer. The base is
  *  workspaceValue ?? globalValue ?? defaultValue so a user's own entries (any
- *  layer) are never lost to the workspace shadow. */
+ *  layer) are never lost to the workspace shadow. Serialized against compat's
+ *  applyOnce, which writes the same key concurrently at activation. */
 async function mergeExclusions(
   ctx: vscode.ExtensionContext,
   patterns: string[],
   log: (m: string) => void
 ): Promise<{ added: number; failed: boolean }> {
-  const conf = vscode.workspace.getConfiguration("java");
-  const inspect = conf.inspect<string[]>("import.exclusions");
-  const base = inspect?.workspaceValue ?? inspect?.globalValue ?? inspect?.defaultValue ?? [];
-  const baseSet = new Set(base);
-  const missing = patterns.filter((p) => !baseSet.has(p));
-  if (missing.length === 0) return { added: 0, failed: false };
-  try {
-    await conf.update("import.exclusions", [...base, ...missing], vscode.ConfigurationTarget.Workspace);
-  } catch (e) {
-    log(`[aosp-nav] failed to write java.import.exclusions: ${e}`);
-    return { added: 0, failed: true };
-  }
-  const own = ctx.workspaceState.get<string[]>(OWN_EXCL_KEY) ?? [];
-  await ctx.workspaceState.update(OWN_EXCL_KEY, [...new Set([...own, ...missing])]);
-  return { added: missing.length, failed: false };
+  return withExclusionLock(async () => {
+    const conf = vscode.workspace.getConfiguration("java");
+    const inspect = conf.inspect<string[]>("import.exclusions");
+    const base = inspect?.workspaceValue ?? inspect?.globalValue ?? inspect?.defaultValue ?? [];
+    const baseSet = new Set(base);
+    const missing = patterns.filter((p) => !baseSet.has(p));
+    if (missing.length === 0) return { added: 0, failed: false };
+    try {
+      await conf.update("import.exclusions", [...base, ...missing], vscode.ConfigurationTarget.Workspace);
+    } catch (e) {
+      log(`[aosp-nav] failed to write java.import.exclusions: ${e}`);
+      return { added: 0, failed: true };
+    }
+    const own = ctx.workspaceState.get<string[]>(OWN_EXCL_KEY) ?? [];
+    await ctx.workspaceState.update(OWN_EXCL_KEY, [...new Set([...own, ...missing])]);
+    return { added: missing.length, failed: false };
+  });
 }
 
 /** The one-time action: delegate to redhat.java's clean-workspace command (it

@@ -256,6 +256,36 @@ describe("computeInjectedJars", () => {
     expect(r.dropped).toBe(0);
   });
 
+  it("prefers the numerically highest apex variant when rescuing (apex10 over apex2)", async () => {
+    const root = await makeRoot(
+      {
+        app: { path: ["frameworks/base/core/java"], jars: ["out/j/a.jar"], dependencies: ["apex-lib"] },
+        // index registers a turbine jar that was never built; three variants
+        // exist on disk — lexicographic descending would pick apex2, numeric
+        // picks apex10 (the newer apex release)
+        "apex-lib": {
+          path: ["vendor/x/apexlib"],
+          jars: ["out/soong/.intermediates/vendor/x/apexlib/apex-lib/turbine-combined/apex-lib.jar"],
+        },
+      },
+      [
+        "out/j/a.jar",
+        "out/soong/.intermediates/vendor/x/apexlib/apex-lib/android_common/javac/apex-lib.jar",
+        "out/soong/.intermediates/vendor/x/apexlib/apex-lib/android_common_apex2/javac/apex-lib.jar",
+        "out/soong/.intermediates/vendor/x/apexlib/apex-lib/android_common_apex10/javac/apex-lib.jar",
+      ]
+    );
+    const r = await computeInjectedJars(root, ["frameworks/base/core/java"], FULL, NOOP);
+    expect(r.mode).toBe("closure");
+    expect(r.jars).toContain(
+      path.join(root, "out/soong/.intermediates/vendor/x/apexlib/apex-lib/android_common_apex10/javac/apex-lib.jar")
+    );
+    expect(r.jars).not.toContain(
+      path.join(root, "out/soong/.intermediates/vendor/x/apexlib/apex-lib/android_common_apex2/javac/apex-lib.jar")
+    );
+    expect(r.rescued).toBe(1);
+  });
+
   it("reuses the closure for the same module set while the index is unchanged", async () => {
     const root = await makeRoot(
       {

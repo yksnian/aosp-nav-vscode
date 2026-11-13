@@ -6,7 +6,6 @@ import {
   buildEntry,
   ensureEntry,
   readCdb,
-  removeCdb,
   upsertEntry,
 } from "../src/clangd/cdb";
 
@@ -61,7 +60,7 @@ describe("ensureEntry on disk", () => {
       expect(changed).toEqual({ changed: true, count: 1 });
       expect((await readCdb(file))[0].arguments).toEqual(["clang++", "-I/aosp/other"]);
     } finally {
-      await removeCdb(file);
+      await fs.rm(file, { force: true });
       await fs.rm(dir, { recursive: true, force: true });
     }
   });

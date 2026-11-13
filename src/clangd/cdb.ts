@@ -115,8 +115,3 @@ export async function ensureCdbFile(file: string): Promise<void> {
   }
 }
 
-export async function removeCdb(file: string): Promise<void> {
-  try {
-    await fs.rm(file, { force: true });
-  } catch { /* ignore */ }
-}

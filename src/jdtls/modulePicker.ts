@@ -103,7 +103,6 @@ export async function maybeOfferModulePicker(
     vscode.l10n.t(
       "[aosp-nav] Injecting Java source roots turns off jdt.ls' per-file source inference, so only the modules you pick keep source navigation. Pick modules now? If you skip this, the modules frameworks/base/core/java and frameworks/base/services/core are selected, and every first-party source root they own is injected."
     ),
-    { modal: true },
     btn,
     vscode.l10n.t("Use defaults")
   );

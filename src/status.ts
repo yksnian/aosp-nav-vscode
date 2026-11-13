@@ -195,8 +195,3 @@ export function statusCancelled(root?: string): void {
   item.show();
 }
 
-export function statusHide(): void {
-  for (const root of [...settleTimers.keys()]) clearSettle(root);
-  mode = "transient";
-  item.hide();
-}

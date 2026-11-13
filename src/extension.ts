@@ -143,7 +143,9 @@ export function activate(ctx: vscode.ExtensionContext): void {
   status.initStatus(ctx);
   ctx.subscriptions.push(channel);
 
-  loadDefaults(ctx).then((d) => { defaultsJson = d; });
+  loadDefaults(ctx)
+    .then((d) => { defaultsJson = d; })
+    .catch(() => { /* a scan retries the load on demand (runFor) and reports there */ });
 
   // C/C++ (clangd): independent of the Java session state machine. It only
   // acts on files under a detected AOSP root and never pre-writes the full CDB.
@@ -547,6 +549,11 @@ export function activate(ctx: vscode.ExtensionContext): void {
       const root = getConfig().androidRoot ?? await detectAospRoot(ae.document.uri.fsPath);
       if (!root) { void vscode.window.showWarningMessage(vscode.l10n.t("[aosp-nav] not an AOSP file")); return; }
       invalidateCache(ctx.globalStorageUri.fsPath, root);
+      // join a scan that is still running first: runFor() would otherwise
+      // return that old promise (stale jars), and sessions.delete would orphan
+      // its in-flight session — the summary below would find nothing.
+      const running = inflight.get(root);
+      if (running) await running;
       sessions.delete(root);
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Window, title: "AOSP: rescanning" },

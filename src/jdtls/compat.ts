@@ -83,6 +83,17 @@ async function safeUpdate(
   return false;
 }
 
+/** Serialize writers of java.import.exclusions. compat's applyOnce and the
+ *  eclipse guard's mergeExclusions both do read-modify-write on the same key
+ *  and run concurrently at activation; without the lock the second writer
+ *  reads a stale base and drops the first writer's entries. */
+let exclusionLock: Promise<unknown> = Promise.resolve();
+export function withExclusionLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = exclusionLock.then(fn, fn);
+  exclusionLock = next.catch(() => undefined);
+  return next;
+}
+
 /** AOSP compatibility switches.
  *
  *  The importer switches are written at the layer `aosp-nav.settingsScope`
@@ -120,32 +131,40 @@ export async function applyOnce(
   }
 
   // java.import.exclusions: append out/.repo (dedup), do not drop user entries.
-  // Deliberately always the GLOBAL layer, unlike the switches above: the eclipse
-  // guard manages the workspace layer of this same key with its own
-  // read-modify-write, and both run concurrently at activation — two writers on
-  // one layer could lose an update. The patterns are harmless to other projects
-  // (nothing imports a directory named out/ as an Eclipse project).
+  // Written at the same layer `aosp-nav.settingsScope` selects (workspace by
+  // default), matching the eclipse guard, which merges into the workspace layer
+  // with the same base chain — one layer, serialized by withExclusionLock so
+  // the two activation-time writers cannot lose each other's entries.
   //
-  // The base is the global layer (or the registered default), NOT the effective
-  // value: layers override rather than merge for this key, so reading the
-  // effective value meant that whenever a workspace layer existed its entries
-  // were copied into global — a copy that did not even help, because the
-  // workspace layer went on winning for this window.
+  // The base is that layer's own value (or the registered default), NOT the
+  // effective value: layers override rather than merge for this key, so
+  // reading the effective value would copy the other layer's entries into
+  // ours — a shadow the other layer then keeps winning over anyway.
+  const exclHasFolder = !!vscode.workspace.workspaceFolders?.length;
+  const exclWorkspaceLayer = scope === "workspace" && exclHasFolder;
   const exclInsp = jc.inspect<string[]>("import.exclusions");
-  const base = exclInsp?.globalValue ?? exclInsp?.defaultValue ?? [];
+  const base = exclWorkspaceLayer
+    ? exclInsp?.workspaceValue ?? exclInsp?.globalValue ?? exclInsp?.defaultValue ?? []
+    : exclInsp?.globalValue ?? exclInsp?.defaultValue ?? [];
   const missing = APPENDED_EXCLUDES.filter((w) => !base.includes(w));
   if (missing.length > 0) {
-    const global = vscode.ConfigurationTarget.Global;
-    if (await safeUpdate(jc, "import.exclusions", [...base, ...missing], global, log)) {
-      await record(ctx, "java.import.exclusions", "global");
+    const target = exclWorkspaceLayer
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    const written = await withExclusionLock(() =>
+      safeUpdate(jc, "import.exclusions", [...base, ...missing], target, log)
+    );
+    if (written) {
+      await record(ctx, "java.import.exclusions", exclWorkspaceLayer ? "workspace" : "global");
     }
   }
-  // A workspace-layer list shadows ours for this window. The eclipse guard
-  // copies the base into its own workspace write, so this is only worth
-  // reporting when that did not happen (a hand-written workspace list).
-  const wsExcl = exclInsp?.workspaceValue;
-  if (wsExcl && APPENDED_EXCLUDES.some((w) => !wsExcl.includes(w))) {
-    log(`[aosp-nav] warn: java.import.exclusions is overridden by the workspace layer, without ${APPENDED_EXCLUDES.join(", ")}`);
+  // Only relevant when we wrote global (no folder / global scope): a
+  // workspace-layer list then shadows our entries for this window.
+  if (!exclWorkspaceLayer) {
+    const wsExcl = jc.inspect<string[]>("import.exclusions")?.workspaceValue;
+    if (wsExcl && APPENDED_EXCLUDES.some((w) => !wsExcl.includes(w))) {
+      log(`[aosp-nav] warn: java.import.exclusions is overridden by the workspace layer, without ${APPENDED_EXCLUDES.join(", ")}`);
+    }
   }
 }
 

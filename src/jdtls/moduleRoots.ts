@@ -274,6 +274,14 @@ const ROOT_WINDOW_EXTRA_EXCLUDE = new Set(["packages", "cmds", "tools", "ravenwo
 
 const FB_BASE = "frameworks/base";
 
+/** jdt.ls writes exclusion entries with escaped glob metacharacters
+ *  (eclipseGuardScan's escapeGlob prefixes * ? [ ] { } \ with a backslash);
+ *  unescape before matching so a blocker dir containing such characters still
+ *  matches the pattern that was written for it. */
+function unescapeGlobEntry(e: string): string {
+  return e.replace(/\\([\\[\]*?{}])/g, "$1");
+}
+
 /** True when dirAbs sits inside (or equals) one of the exclusion entries.
  *  `java.import.exclusions` mixes absolute dir paths (scanned gradle/maven
  *  project dirs: sdk/testapps, test/suite_harness, external test libs, ...)
@@ -286,7 +294,7 @@ const FB_BASE = "frameworks/base";
 export function matchesImportExclusion(dirAbs: string, entries: readonly string[]): boolean {
   const segs = dirAbs.split("/");
   for (const raw of entries) {
-    const e = raw.trim();
+    const e = unescapeGlobEntry(raw.trim());
     if (!e) continue;
     if (e.includes("*")) {
       const m = /^\*\*\/(.+?)(?:\/\*\*)?$/.exec(e);
@@ -313,7 +321,7 @@ export function findImportExclusion(
 ): string | undefined {
   const segs = dirAbs.split("/");
   for (const raw of entries) {
-    const e = raw.trim();
+    const e = unescapeGlobEntry(raw.trim());
     if (!e) continue;
     if (e.includes("*")) {
       const m = /^\*\*\/(.+?)(?:\/\*\*)?$/.exec(e);

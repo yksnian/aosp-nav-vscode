@@ -99,7 +99,8 @@ async function rescueBuiltJar(root: string, name: string, dir: string): Promise<
   } catch {
     return null;
   }
-  variants.sort();
+  // numeric-aware: lexicographic would pick apex2 over apex10 when descending
+  variants.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   for (const variant of variants.reverse()) {
     for (const kind of JAR_KINDS) {
       const rel = `${base}/${variant}/${kind}/${name}.jar`;

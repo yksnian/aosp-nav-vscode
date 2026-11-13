@@ -178,6 +178,12 @@ export async function applyKotlinClasspath(
   jars: string[],
   log: (msg: string) => void
 ): Promise<KotlinApplyResult> {
+  if (process.platform === "win32") {
+    // fwcd only looks for .bat/.cmd/.ps1 classpath scripts on Windows, ours is
+    // a POSIX sh script — writing it would report a success that never lands.
+    log("[aosp-nav] kotlin: classpath channel not supported on Windows (fwcd reads only .bat/.cmd/.ps1 scripts); skipping");
+    return { changed: false, blocked: true, jars: 0 };
+  }
   try {
     const script = scriptPath();
     const current = await readIfExists(script);

@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { escapeGlob } from "../src/jdtls/eclipseGuardScan";
+import { findImportExclusion } from "../src/jdtls/moduleRoots";
 
 // moduleRoots.ts is deliberately vscode-free so these run unmocked.
 import {
@@ -263,6 +265,15 @@ describe("matchesImportExclusion", () => {
 
   it("ignores unknown pattern shapes", () => {
     expect(matchesImportExclusion("/aosp/x/src", ["*.md", ""])).toBe(false);
+  });
+
+  it("unescapes the glob metacharacters the guard writes (escapeGlob output)", () => {
+    const abs = "/aosp/b [1]/src";
+    const entry = escapeGlob("**/b [1]/**"); // "**/b \[1\]/**"
+    expect(entry).toContain("\\[");
+    expect(matchesImportExclusion(abs, [entry])).toBe(true);
+    expect(matchesImportExclusion("/aosp/other/src", [entry])).toBe(false);
+    expect(findImportExclusion(abs, [entry])).toBe(entry);
   });
 
   it("autoModulesForFolder skips dirs under import exclusions", () => {
