@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.2.2-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.2.3-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Instant source navigation for Android (AOSP) in VSCode — go-to-definition, completion and reference resolution across **all** Java and Kotlin modules (frameworks/base, packages/modules/*, system_server services, ...), with zero manual project setup.
 
@@ -47,7 +47,7 @@ Messages follow the VS Code display language: Chinese for zh-cn, English everywh
 ## Install & verify (user checklist)
 
 1. Install `redhat.java` (declared dependency). For C/C++ install `llvm-vs-code-extensions.vscode-clangd` separately — the clangd extension bundles no server.
-2. Install the VSIX in the same environment as the AOSP checkout. In Remote-WSL, run `code --install-extension aosp-nav-0.2.2.vsix` from the WSL terminal, then reload the window.
+2. Install the VSIX in the same environment as the AOSP checkout. In Remote-WSL, run `code --install-extension aosp-nav-0.2.3.vsix` from the WSL terminal, then reload the window.
 3. Open the AOSP checkout as a workspace folder. Multi-root windows work, but all C/C++ files in one window share a single `clangd.arguments`.
 4. **Java**: open any `.java` file and wait for `$(check) AOSP:<n>`. The module picker runs before injection; skipping it selects the default modules (`frameworks/base/core/java` + `frameworks/base/services/core` and all their first-party roots in an AOSP-root window). `sourcePaths` are pushed into the running language server, so no reload is normally needed — the reload prompt only appears if jdt.ls rejects the live update, once per distinct root list.
 5. **C/C++**: set `clangd.path` to `<root>/prebuilts/clang/host/linux-x86/clang-r*/bin/clangd` (or accept the first-open suggestion). Open a `.cpp`; the first file may start with old arguments and then restart clangd once after the 800 ms debounce. Later files reuse the server. Verify with F12 on a symbol referenced by an `#include` in a C/C++ file — it should resolve to the corresponding header in the source tree. `AOSP: Show Diagnostics` should report `cpp origin` as `compdb` or `cc_deps`.
@@ -134,6 +134,8 @@ The injected list is the **dependency closure of the selected module dirs**, not
 The full-list fallback (used only when the closure cannot be computed) keeps the earlier artifact rules — variant/bucket selection, `.impl` normalization, pre-jarjar dedup, stub-family exclusion and directory-priority ordering.
 
 ## Kotlin support (experimental)
+
+**A window opened on the AOSP root itself does not support Kotlin: fwcd's language server walks every directory of the workspace on startup and has no exclusion setting, so from a whole tree (~365k directories) it hangs forever on "Updating source path". Open a subdirectory window (e.g. `packages/modules/Connectivity`) instead — Kotlin works there.**
 
 `Ctrl+Shift+P` -> `Open User Settings (JSON)`, set `aosp-nav.kotlin.enabled: true` and install [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`) — the companion of fwcd kotlin-language-server; it downloads the language server on first use, so one online start is needed. The plugin then feeds the **same jar list** to the Kotlin language server:
 

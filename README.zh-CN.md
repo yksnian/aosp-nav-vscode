@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.2.2-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.2.3-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java/Kotlin 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
 
@@ -47,7 +47,7 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 ## 安装与验证 (用户清单)
 
 1. 安装 `redhat.java` (扩展依赖)。C/C++ 需另外安装 `llvm-vs-code-extensions.vscode-clangd`——clangd 扩展不自带服务端。
-2. 在与 AOSP checkout 相同的环境里安装 VSIX。Remote-WSL 下在 WSL 终端执行 `code --install-extension aosp-nav-0.2.2.vsix`, 然后重载窗口。
+2. 在与 AOSP checkout 相同的环境里安装 VSIX。Remote-WSL 下在 WSL 终端执行 `code --install-extension aosp-nav-0.2.3.vsix`, 然后重载窗口。
 3. 把 AOSP checkout 作为 workspace 打开。多根窗口可用, 但同一窗口内所有 C/C++ 文件共用一份 `clangd.arguments`。
 4. **Java**: 打开任意 `.java`, 等状态栏变为 `$(check) AOSP:<n>`。模块选择弹窗在注入之前出现; 跳过则默认勾选 `frameworks/base/core/java` + `frameworks/base/services/core` 两个模块并注入其全部一级源码根 (AOSP 根窗口)。`sourcePaths` 会直接推送到运行中的语言服务器, 正常情况下无需重载; 只有当 jdt.ls 拒绝热更新时才会提示重载, 且同一份源码根列表只提示一次。
 5. **C/C++**: 把 `clangd.path` 指向 `<root>/prebuilts/clang/host/linux-x86/clang-r*/bin/clangd` (或接受首次打开时的建议)。打开一个 `.cpp`; 首个文件可能先用旧参数启动, 约 800 ms 去抖后重启一次 clangd, 之后复用。验证: 打开一个包含 `#include` 的 C/C++ 文件, 对文件内引用的符号按 F12 → 应落到源码树内的对应头文件。`AOSP: Show Diagnostics` 中 `cpp origin` 应显示 `compdb` 或 `cc_deps`。
@@ -139,6 +139,8 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 全量列表回退 (仅在闭包无法计算时使用) 仍沿用此前的产物规则——变体/类型分桶选择、`.impl` 归一化、pre-jarjar 去重、桩家族排除与目录优先级排序。
 
 ## Kotlin 支持 (实验性)
+
+**不支持在 AOSP 根目录的窗口中启用 Kotlin: fwcd 语言服务器启动时会遍历 workspace 的每一个目录且无任何排除配置, 从整棵树 (~36.5 万个目录) 出发会永远卡在 "Updating source path"。请改为打开子目录窗口 (如 `packages/modules/Connectivity`), Kotlin 在其中可正常工作。**
 
 `Ctrl+Shift+P` -> `Open User Settings (JSON)`, 设置 `aosp-nav.kotlin.enabled: true` 并安装 [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`, fwcd kotlin-language-server 的官方配套; 首次使用会下载语言服务器, 需联网一次)。插件随后把 **同一份 jar 列表** 喂给 Kotlin 语言服务器:
 
