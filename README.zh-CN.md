@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.2.3-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.2.5-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java/Kotlin 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
 
@@ -76,7 +76,8 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 | `aosp-nav.excludeGlobs`  | `[]`       | 匹配 `.intermediates/` 之后相对路径的正则。用 `^` 锚定可精确到顶层目录, 如 `"^packages/apps/"` |
 | `aosp-nav.excludeMerge`  | `"append"` | `append` = 用户列表追加到默认值后; `replace` = 丢弃默认值    |
 | `aosp-nav.settingsScope` | `"workspace"` | `referencedLibraries` 与 Gradle/Maven 导入器开关的写入位置: `workspace` (仓库内 `.vscode/settings.json`, 不影响其他 Java 工程) 或 `global` (用户 settings, 多窗口共享, 但绝对路径 jar 会污染非 AOSP 的 Java 工程)。0.1.2 起写入不再需要确认; 切换 scope 时插件会自动清掉自己先前写在另一层的旧列表。你自己改回 `true` 的开关插件不会再动 |
-| `aosp-nav.kotlin.enabled` | `false` | 实验性: 将同一份 jar 列表经 fwcd kotlin-language-server 的全局 classpath 脚本注入 (见 [Kotlin 支持](#kotlin-支持实验性)) |
+| `aosp-nav.kotlin.enabled` | `false` | 实验性: 将同一份 jar 列表经 Kotlin 语言服务器 (ktlsp) 的 classpath 脚本注入 (见 [Kotlin 支持](#kotlin-支持实验性)) |
+| `aosp-nav.kotlin.klsExcludes` | `[]` | 追加 ktlsp 源路径扫描排除项 (`.kls/exclusions.txt` 分段 glob, 任意深度), 叠加在内置 `out`/`.repo`/`prebuilts`/`toolchain`/`external`/`device`/`vendor`/`kernel` 之上。避免使用 `frameworks`/`packages` 内部也存在的目录名 (如 `packages`、`tools`、`test`、`log`、`system`): 匹配不分层级 |
 | `aosp-nav.java.sourceRoots` | `[]` | 手写补充的源码根 (相对 AOSP 根或绝对路径), 叠加在模块选择之上写入 workspace 层 `java.project.sourcePaths`。空数组表示"没有手写补充", 不再等于"关闭注入"——模块选择 (或根窗口默认值) 仍会生效。直接热更新到运行中的服务器, 无需重载 |
 | `aosp-nav.java.sourceRootModules` | `[]` (从未写入 = 根窗口默认模块) | 通过 `AOSP: Select Java Source Roots by Module` 选择的模块目录。AOSP 根窗口在从未写入时会默认写入并勾选 `frameworks/base/core/java` + `frameworks/base/services/core`, 注入它们各自拥有的全部一级源码根 (真实树上 16 个根 / 约 7.5k 个 `.java`); 子目录窗口则使用该目录下的生产模块 (排除 tests/demos/samples/commercial), 来自 `out/soong/module_bp_java_deps.json`。显式写入列表 (即使 `[]` 表示全不选) 会关闭这两种默认。无需重载 |
 | `aosp-nav.cpp.enabled` | `true` | C/C++ 走 clangd (见 [C/C++ 跳转](#cc-跳转-clangd)) |
@@ -140,13 +141,13 @@ workspace 打开 AOSP 根或任意子仓库 (如 frameworks/base) 均可; 检测
 
 ## Kotlin 支持 (实验性)
 
-**不支持在 AOSP 根目录的窗口中启用 Kotlin: fwcd 语言服务器启动时会遍历 workspace 的每一个目录且无任何排除配置, 从整棵树 (~36.5 万个目录) 出发会永远卡在 "Updating source path"。请改为打开子目录窗口 (如 `packages/modules/Connectivity`), Kotlin 在其中可正常工作。**
+上游 [fwcd/kotlin-language-server](https://github.com/fwcd/kotlin-language-server) 已停止维护, 且其 server 启动时会遍历 workspace 的每一个目录又没有任何排除配置, 从整棵树出发会永远卡在 "Updating source path"。因此插件改用 **[ktlsp](https://codeberg.org/winlogon/ktlsp)** (社区维护的 fork, 锁定 `v1.4.0-rc1`)。**在 AOSP 根目录打开的窗口现在也能用了。** ktlsp 有两类无界扫描, 各有各的剪枝通道: 源码扫描读 `.kls/exclusions.txt` (只剪掉 `out`、`external`、`prebuilts` 等没有 Kotlin 的巨型树), 构建文件扫描读根目录 `.gitignore`, 插件把**除 `.kls` 之外的每个顶层目录**都写进去剪掉。后者才是解卡关键: ktlsp 只有在树内找不到任何解析器时才会执行 classpath 脚本, 而 `frameworks` 下的每个 `build.gradle` 都会触发一次 Gradle Tooling API 下载尝试 + 必然失败的 CLI 回退。剪空之后 `.kls/kls-classpath` 是唯一的解析器, 实际 classpath 就是注入的 jar 列表。条目不写前导斜杠 (`out` 而非 gitignore 风格的 `/out/`): ktlsp 会把每行转成锚定在根上的 glob, 带斜杠的写法什么都匹配不到。插件**不提供白名单** ("只索引 frameworks") —— ktlsp 按任意层级的同名目录匹配, 剪 `packages` 会连带剪掉 `frameworks/base/packages` (SystemUI、Settings, 约 1.9 万个 Kotlin 文件)。
 
-`Ctrl+Shift+P` -> `Open User Settings (JSON)`, 设置 `aosp-nav.kotlin.enabled: true` 并安装 [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`, fwcd kotlin-language-server 的官方配套; 首次使用会下载语言服务器, 需联网一次)。插件随后把 **同一份 jar 列表** 喂给 Kotlin 语言服务器:
+`Ctrl+Shift+P` -> `Open User Settings (JSON)`, 设置 `aosp-nav.kotlin.enabled: true` 并安装 [vscode-kotlin](https://marketplace.visualstudio.com/items?itemName=fwcd.kotlin) (`fwcd.kotlin`, 语言服务器客户端)。下次打开文件时插件会把锁定版本的 ktlsp server (约 87 MiB, 仅一次) 下载到扩展存储, 并把 `kotlin.languageServer.path` 指过去 (写入 workspace 设置; 你自己设置的值不会被覆盖)。ktlsp 需要 JDK 21——检测不到时会提示你自行设置 `kotlin.java.home`。插件随后把 **同一份 jar 列表** 喂给 Kotlin 语言服务器:
 
-1. **注入** —— 每个根的 jar 列表写入 `~/.config/kotlin-language-server/aosp-nav/`, 并维护服务器的全局 classpath 脚本 (`~/.config/kotlin-language-server/classpath`)。脚本按 workspace root 分发: AOSP 根输出其 jar 列表; 其他目录输出空, fwcd 回落到正常的 gradle/maven 解析——树内散落的 `build.gradle` 永远不会被碰, 也无需任何导入器开关。
+1. **注入** —— 每个根的 jar 列表写入 `~/.config/kotlin-language-server/aosp-nav/`, 并维护服务器的全局 classpath 脚本 (`~/.config/kotlin-language-server/classpath`)。ktlsp 实际读到的是 `.kls/kls-classpath` (构建文件扫描已被剪空, 见上), 它 cat 同一份 per-root 列表; 全局脚本保留为删除 `.kls` 后的兜底。全局脚本按 workspace root 分发: AOSP 根输出其 jar 列表; 其他目录输出空, 回落到正常的 gradle/maven 解析——树内散落的 `build.gradle` 永远不会被碰, 也无需任何导入器开关。脚本中的 manifest 行随任一 jar 列表变化而变化, ktlsp 的内容哈希 classpath 缓存因此永远不会命中旧列表。
 2. **护栏与家族接管** —— 陌生用户自管的 classpath 脚本不会被覆盖 (插件不接管该通道并警告一次); 而 [aosp-nav.nvim](https://github.com/yksnian/aosp-nav.nvim) 生成的脚本会被识别为家族脚本: 移动为 `classpath.nvim.bak` 并作为分发脚本的 fallback 分支 (未注册的 root 仍走 nvim 逻辑: make-era 树、兄弟 checkout、jar fallback 目录), 且 aosp-nav.nvim 认得本插件的标记、不会反向覆盖——不会乒乓。
-3. **回滚** —— `AOSP: Reset Plugin Settings` 移除脚本与 jar 列表, 并在接管过家族脚本时从 `classpath.nvim.bak` 还原; 陌生脚本不受影响。
+3. **回滚** —— `AOSP: Reset Plugin Settings` 移除脚本与 jar 列表、`.kls` 支撑文件与 `.gitignore` 管理段, 并在接管过家族脚本时从 `classpath.nvim.bak` 还原; 陌生脚本不受影响。
 
 预期体验: 与 Java 通道一致——已打开的文件按源码解析; 只存在于 jar 中的类型 (AIDL、proto、aconfig) 落在反编译视图。Java→Kotlin 跳转在开关关闭时即可用——`kotlinc` jar 本就在注入列表中。
 
@@ -207,7 +208,7 @@ AOSP 树内散落着少量 build.gradle (多见于测试目录)。插件会自�
 
 ### Kotlin 跳转不工作
 
-检查 `AOSP: Show Diagnostics` 的 `kotlin` 行: 扩展必须是 `fwcd.kotlin`, classpath 脚本须显示 `ours` 或家族接管状态 (后者在下次注入时自动接管), 且需联网下载语言服务器。
+检查 `AOSP: Show Diagnostics` 的 `kotlin` 与 `kotlin ktlsp` 行: 扩展必须是 `fwcd.kotlin`, classpath 脚本须显示 `ours` 或家族接管状态 (后者在下次注入时自动接管), ktlsp 行须显示内置服务器且两个支撑文件在位。下载失败时按 ktlsp 发布页 (codeberg.org/winlogon/ktlsp) 手动安装并设置 `kotlin.languageServer.path` 即可。
 
 ### Kotlin Language Client: couldn't create connection to server / The Kotlin Language Client server crashed x times
 如:

@@ -3,7 +3,7 @@
   "displayName": "Android Source Navigation",
   "description": "go-to-definition and completion across all android java modules",
   "publisher": "yksnian",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/yksnian/aosp-nav-vscode" },
   "icon": "icon.png",
@@ -66,6 +66,12 @@
           "type": "boolean",
           "default": false,
           "description": "Kotlin support (experimental)"
+        },
+        "aosp-nav.kotlin.klsExcludes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extra ktlsp source-scan exclusions (.kls/exclusions.txt segment globs, any depth), appended to the built-in out/.repo/prebuilts/toolchain/external/device/vendor/kernel. Avoid names that also occur inside frameworks or packages (e.g. packages, tools, test, log, system): matching is depth-agnostic, so they would also drop real sources"
         },
         "aosp-nav.java.sourceRoots": {
           "type": "array",

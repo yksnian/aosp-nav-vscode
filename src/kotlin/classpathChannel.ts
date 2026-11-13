@@ -50,6 +50,8 @@ interface RootEntry {
   hash: string;
   matchPaths: string[]; // root itself + workspace folders inside it (fwcd CWDs)
   lastUsed?: number; // epoch ms of the last injection; used for the cap
+  /** digest of the jar list content; see buildScript's manifest line */
+  digest?: string;
 }
 
 export interface KotlinApplyResult {
@@ -116,6 +118,16 @@ function jarListPath(hash: string): string {
   return path.join(klsConfigDir(), OWN_DIR, `${hash}.txt`);
 }
 
+/** Jar list path for one root; klsSupport's .kls/kls-classpath cats it. */
+export function jarListPathFor(root: string): string {
+  return jarListPath(djb2(root));
+}
+
+/** Roots remembered in the dispatch table, for the kls rollback. */
+export function knownKotlinRoots(ctx: vscode.ExtensionContext): string[] {
+  return Object.keys(ctx.globalState.get<Record<string, RootEntry>>(ROOT_MAP_KEY) ?? {});
+}
+
 /** POSIX single-quote quoting: everything inside is literal (spaces, $, back-
  *  ticks, glob chars), and an embedded `'` becomes `'\''`. The previous
  *  `case "$PWD" in "…")` form silently broke on a path containing `"`, and
@@ -134,6 +146,10 @@ export function buildScript(map: Record<string, RootEntry>): string {
     "# Dispatches the fwcd kotlin-language-server classpath by workspace root.",
     "# Known roots cat their jar list; others fall through to the nvim family",
     "# script (make-era trees, sibling checkouts) or to fwcd's gradle/maven.",
+    // ktlsp caches resolver results per build-file content hash; this line
+    // changes whenever any jar list changes, so the cache can never serve a
+    // stale list (fwcd never caches: currentBuildFileVersion stays at 1).
+    `# manifest ${Object.values(map).map((e) => `${e.hash}:${e.digest ?? "0"}`).join(" ")}`,
   ];
   for (const e of Object.values(map)) {
     const txt = jarListPath(e.hash);
@@ -236,6 +252,7 @@ export async function applyKotlinClasspath(
     const txt = jarListPath(entry.hash);
     await fs.mkdir(path.dirname(txt), { recursive: true });
     const content = jars.join(path.delimiter) + "\n";
+    entry.digest = djb2(content);
     let txtChanged = false;
     if ((await readIfExists(txt)) !== content) {
       const tmp = `${txt}.${process.pid}.tmp`;

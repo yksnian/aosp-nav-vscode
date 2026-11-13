@@ -37,7 +37,8 @@ import {
 import { computeInjectedJars } from "./jdtls/jarPlan";
 import { jdtlsWorkspaceDir, probeJdtlsCrash } from "./jdtls/crashSignals";
 import type { JdtlsCrashProbe } from "./jdtls/crashSignals";
-import { applyKotlinClasspath, probeKotlinChannel, clearKotlinChannel, pruneKotlinRootMap } from "./kotlin/classpathChannel";
+import { applyKotlinClasspath, probeKotlinChannel, clearKotlinChannel, pruneKotlinRootMap, knownKotlinRoots } from "./kotlin/classpathChannel";
+import { ensureKlsSupport, ensureKtlspBootstrap, probeKlsSupport, clearKlsSupport } from "./kotlin/klsSupport";
 import { ensureKotlinExtension } from "./kotlin/depManager";
 import {
   registerCppSupport,
@@ -417,7 +418,13 @@ export function activate(ctx: vscode.ExtensionContext): void {
       // via its global classpath script (independent of the java write
       // below, so a java settings failure does not kill kotlin nav)
       if (cfg.kotlinEnabled) {
-        await applyKotlinClasspath(ctx, root, jars, (m) => channel.appendLine(m));
+        const kr = await applyKotlinClasspath(ctx, root, jars, (m) => channel.appendLine(m));
+        if (!kr.blocked) {
+          // ktlsp support files (.kls exclusions + .gitignore prune block)
+          // and the pinned-server bootstrap ride on the injection flow
+          await ensureKlsSupport(root, jars, (m) => channel.appendLine(m));
+          ensureKtlspBootstrap(ctx, (m) => channel.appendLine(m));
+        }
         void ensureKotlinExtension();
       }
       const res = await applyReferencedLibraries(ctx, cfg.settingsScope, jars, (m) => channel.appendLine(m));
@@ -604,6 +611,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       await clearOwnSourcePaths(ctx);
       await clearOwnExclusions(ctx);
       await clearKotlinChannel(ctx);
+      await clearKlsSupport(ctx, knownKotlinRoots(ctx));
       await resetCppSupport(ctx, (m) => channel.appendLine(m));
       // module picks are written by the picker into the workspace layer
       await vscode.workspace
@@ -867,6 +875,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
       const kEnabled = getConfig().kotlinEnabled;
       const kExt = vscode.extensions.getExtension("fwcd.kotlin");
       const kp = root && kEnabled ? await probeKotlinChannel(root) : null;
+      const kls = root && kEnabled ? await probeKlsSupport(root, ctx) : null;
       lines.push({
         ok: kEnabled ? (kExt ? (kp ? kp.script === "ours" || kp.script === "family-nvim" : null) : false) : null,
         label: "kotlin",
@@ -882,6 +891,13 @@ export function activate(ctx: vscode.ExtensionContext): void {
                       : ", classpath script not written"
                 : ""
             }`
+          : "off (aosp-nav.kotlin.enabled)",
+      });
+      lines.push({
+        ok: kEnabled && kls ? (kls.ls === "fwcd default (deprecated)" ? false : kls.exclusions !== null && kls.gitignore) : null,
+        label: "kotlin ktlsp",
+        detail: kEnabled && kls
+          ? `LS=${kls.ls}${kls.version ? ` (${kls.version})` : ""}, exclusions=${kls.exclusions === null ? "missing" : `${kls.exclusions} entries`}, gitignore prune=${kls.gitignore ? "present" : "missing"}, kls-classpath=${kls.klsClasspath ? "present" : "missing"}`
           : "off (aosp-nav.kotlin.enabled)",
       });
       const vmargs = vscode.workspace.getConfiguration("java").get<string>("jdt.ls.vmargs") ?? "";

@@ -36,4 +36,17 @@ describe("kotlin dispatch script quoting", () => {
       fs.rmSync(file, { force: true });
     }
   });
+
+  it("carries a manifest line that changes with any root digest", () => {
+    // ktlsp caches resolver results per script content hash; the manifest
+    // line must therefore change whenever any jar list changes
+    const a = buildScript({ "/r": { hash: "h1", matchPaths: ["/r"], digest: "d1" } });
+    const b = buildScript({ "/r": { hash: "h1", matchPaths: ["/r"], digest: "d2" } });
+    expect(a).toMatch(/# manifest h1:d1\n/);
+    expect(b).toMatch(/# manifest h1:d2\n/);
+    expect(a).not.toBe(b);
+    // entries without a digest (legacy state) contribute a stable placeholder
+    const c = buildScript({ "/r": { hash: "h1", matchPaths: ["/r"] } });
+    expect(c).toMatch(/# manifest h1:0\n/);
+  });
 });
