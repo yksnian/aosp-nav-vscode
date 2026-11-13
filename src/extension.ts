@@ -894,7 +894,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
           : "off (aosp-nav.kotlin.enabled)",
       });
       lines.push({
-        ok: kEnabled && kls ? (kls.ls === "fwcd default (deprecated)" ? false : kls.exclusions !== null && kls.gitignore) : null,
+        ok: kEnabled && kls ? (kls.ls === "fwcd default (deprecated)" ? false : kls.exclusions !== null && kls.gitignore && kls.klsClasspath) : null,
         label: "kotlin ktlsp",
         detail: kEnabled && kls
           ? `LS=${kls.ls}${kls.version ? ` (${kls.version})` : ""}, exclusions=${kls.exclusions === null ? "missing" : `${kls.exclusions} entries`}, gitignore prune=${kls.gitignore ? "present" : "missing"}, kls-classpath=${kls.klsClasspath ? "present" : "missing"}`

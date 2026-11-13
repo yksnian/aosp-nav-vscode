@@ -1,6 +1,6 @@
 # aosp-nav
 
-[![Version](https://img.shields.io/badge/version-0.2.5-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
+[![Version](https://img.shields.io/badge/version-0.2.6-blue.svg)](https://github.com/yksnian/aosp-nav-vscode)
 
 Android (AOSP) 源码导航插件: 在 VSCode 中获得跨 **所有** Java/Kotlin 模块 (frameworks/base、packages/modules/*、system_server 服务……) 的跳转、补全与引用解析, 无需任何手动工程配置。
 

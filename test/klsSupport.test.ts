@@ -102,12 +102,15 @@ describe("klsSupport", () => {
   });
 
   it("preserves user .gitignore content and is idempotent", async () => {
+    const log: string[] = [];
     await fs.writeFile(path.join(root, ".gitignore"), "node_modules");
-    await ensureKlsSupport(root, [], () => {});
+    await ensureKlsSupport(root, [], (m) => log.push(m));
     const first = await fs.readFile(path.join(root, ".gitignore"), "utf8");
     expect(first.startsWith("node_modules\n")).toBe(true);
-    await ensureKlsSupport(root, [], () => {});
+    await ensureKlsSupport(root, [], (m) => log.push(m));
     expect(await fs.readFile(path.join(root, ".gitignore"), "utf8")).toBe(first);
+    // the re-run rewrote nothing, so it stays quiet (#11)
+    expect(log.filter((m) => m.includes("files ready"))).toHaveLength(1);
   });
 
   it("replaces the managed block without duplicating the marker", async () => {
@@ -116,7 +119,58 @@ describe("klsSupport", () => {
     await ensureKlsSupport(root, [], () => {});
     const gi = await fs.readFile(path.join(root, ".gitignore"), "utf8");
     expect(gi.startsWith("user\n")).toBe(true);
-    expect(gi.match(/# aosp-nav managed/g)).toHaveLength(1);
+    expect(gi.match(/pruning \(begin\)/g)).toHaveLength(1);
+    expect(gi.match(/pruning \(end\)/g)).toHaveLength(1);
+  });
+
+  it("preserves user content below the managed block on rewrite", async () => {
+    const userBlock =
+      "user-before\n" +
+      "# aosp-nav managed -- ktlsp classpath pruning (begin)\n" +
+      "stale\n" +
+      "# aosp-nav managed -- ktlsp classpath pruning (end)\n" +
+      "user-after\n";
+    await fs.writeFile(path.join(root, ".gitignore"), userBlock);
+    await ensureKlsSupport(root, [], () => {});
+    const gi = await fs.readFile(path.join(root, ".gitignore"), "utf8");
+    expect(gi.startsWith("user-before\n")).toBe(true);
+    expect(gi.endsWith("user-after\n")).toBe(true);
+    expect(gi).not.toContain("stale");
+    expect(gi.match(/pruning \(begin\)/g)).toHaveLength(1);
+    expect(gi.match(/pruning \(end\)/g)).toHaveLength(1);
+  });
+
+  it("migrates the pre-dual-marker EOF block and recovers torn writes", async () => {
+    // old format: single marker line, block ran to EOF
+    await fs.writeFile(
+      path.join(root, ".gitignore"),
+      "user\n# aosp-nav managed -- ktlsp classpath pruning\nout\nprebuilts\n"
+    );
+    await ensureKlsSupport(root, [], () => {});
+    let gi = await fs.readFile(path.join(root, ".gitignore"), "utf8");
+    expect(gi.startsWith("user\n")).toBe(true);
+    expect(gi.endsWith("(end)\n")).toBe(true);
+    expect(gi.match(/pruning \(begin\)/g)).toHaveLength(1);
+    expect(gi.match(/pruning \(end\)/g)).toHaveLength(1);
+    // torn write: begin without end is treated as our block, replaced to EOF
+    await fs.writeFile(
+      path.join(root, ".gitignore"),
+      "user2\n# aosp-nav managed -- ktlsp classpath pruning (begin)\ngarbage"
+    );
+    await ensureKlsSupport(root, [], () => {});
+    gi = await fs.readFile(path.join(root, ".gitignore"), "utf8");
+    expect(gi.startsWith("user2\n")).toBe(true);
+    expect(gi).not.toContain("garbage");
+    expect(gi.match(/pruning \(end\)/g)).toHaveLength(1);
+  });
+
+  it("warns about klsExcludes names colliding with frameworks/packages segments", async () => {
+    const log: string[] = [];
+    extraExcludes.push("tools");
+    await ensureKlsSupport(root, [], (m) => log.push(m));
+    expect(log.join("\n")).toContain("also occur inside frameworks/packages (tools)");
+    const excl = await fs.readFile(path.join(root, ".kls", "exclusions.txt"), "utf8");
+    expect(excl).toContain("tools");
   });
 
   it("changes the kls-classpath manifest when the jar list changes", async () => {
@@ -127,6 +181,13 @@ describe("klsSupport", () => {
     expect(a).not.toBe(b);
     await ensureKlsSupport(root, ["/a.jar", "/b.jar"], () => {});
     expect(await fs.readFile(path.join(root, ".kls", "kls-classpath"), "utf8")).toBe(b);
+  });
+
+  it("self-heals a drifted mode on the kls-classpath script", async () => {
+    await ensureKlsSupport(root, ["/a.jar"], () => {});
+    await fs.chmod(path.join(root, ".kls", "kls-classpath"), 0o644);
+    await ensureKlsSupport(root, ["/a.jar"], () => {});
+    expect((await fs.stat(path.join(root, ".kls", "kls-classpath"))).mode & 0o111).toBe(0o111);
   });
 
   it("probe reports file states and the default fwcd server", async () => {
@@ -164,6 +225,14 @@ describe("klsSupport", () => {
     expect(await fs.readFile(path.join(root, ".gitignore"), "utf8")).not.toContain("# aosp-nav managed");
     expect(configStore["kotlin.languageServer.path"]).toBeUndefined();
     expect(configStore["kotlin.java.home"]).toBeUndefined();
+  });
+
+  it("rollback cuts only the managed interval and keeps lines after the block", async () => {
+    await ensureKlsSupport(root, ["/a.jar"], () => {});
+    await fs.appendFile(path.join(root, ".gitignore"), "user-after\n");
+    await clearKlsSupport(ctx, [root]);
+    const gi = await fs.readFile(path.join(root, ".gitignore"), "utf8");
+    expect(gi).toBe("user-after\n");
   });
 
   it("rollback never touches a foreign exclusions file or user LS path", async () => {

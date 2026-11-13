@@ -1,6 +1,9 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs/promises";
+import { createWriteStream } from "fs";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
 import { djb2 } from "../infra/hash";
 import { extractZip } from "../infra/unzip";
 import { jarListPathFor, shQuote } from "./classpathChannel";
@@ -18,13 +21,14 @@ import { jarListPathFor, shQuote } from "./classpathChannel";
  *    semantics against absolute paths, so entries must be bare names: a
  *    gitignore-style line with a leading slash ends up with a doubled slash
  *    inside the generated pattern and never matches.
- *  The build-file scan is what actually stalls: ktlsp consults the classpath
- *  script only when the tree yields no resolver at all, and every build.gradle
- *  under frameworks starts a Gradle Tooling API connection (distribution
- *  download) plus CLI fallbacks that all fail offline — dozens of projects,
+ *  The build-file scan is what actually stalls: every build.gradle under
+ *  frameworks starts a Gradle Tooling API connection (distribution download)
+ *  plus CLI fallbacks that all fail offline — dozens of projects,
  *  minutes of error spam, repeated on each refresh. So the .gitignore block
- *  prunes every top-level dir except `.kls`, leaving `.kls/kls-classpath` as
- *  the only resolver and the injected jar list as the classpath.
+ *  prunes every top-level dir except `.kls`: the remaining in-tree resolvers
+ *  are unioned with the global classpath script, and the global script is only
+ *  consulted when nothing else yields a classpath — leaving
+ *  `.kls/kls-classpath` (the injected jar list) as the only effective resolver.
  *  The source walk only needs the huge non-Kotlin trees gone, so it keeps a
  *  conservative static set: a whitelist complement is wrong here because
  *  matching is depth-agnostic — pruning `packages` would also drop
@@ -34,7 +38,8 @@ import { jarListPathFor, shQuote } from "./classpathChannel";
  *  content-compared; a failure is logged and never affects the Java channel. */
 
 const EXCL_MARKER = "# aosp-nav managed -- ktlsp source exclusions";
-const GI_MARKER = "# aosp-nav managed -- ktlsp classpath pruning";
+const GI_BEGIN = "# aosp-nav managed -- ktlsp classpath pruning (begin)";
+const GI_END = "# aosp-nav managed -- ktlsp classpath pruning (end)";
 const KLS_DIR = ".kls";
 const EXCL_NAME = "exclusions.txt";
 const CP_NAME = "kls-classpath";
@@ -93,6 +98,10 @@ const AOSP_TOP_LEVEL = [
  *  stable 1.4.0 lands. Requires Java 21 (fwcd needed 11). */
 const KTLSP_VERSION = "v1.4.0-rc1";
 const KTLSP_URL = `https://codeberg.org/winlogon/ktlsp/releases/download/${KTLSP_VERSION}/server.zip`;
+/** Hard ceiling for the ktlsp download: the archive is 87 MiB, so slow
+ *  links still finish in well under a minute; the margin covers captive
+ *  portals and slow mirrors instead of hanging the progress UI forever. */
+const DOWNLOAD_TIMEOUT_MS = 300_000;
 
 async function readIfExists(p: string): Promise<string | null> {
   try {
@@ -104,7 +113,11 @@ async function readIfExists(p: string): Promise<string | null> {
 
 /** Content-compared atomic write; returns whether anything was written. */
 async function writeIfChanged(p: string, content: string, mode?: number): Promise<boolean> {
-  if ((await readIfExists(p)) === content) return false;
+  const same = (await readIfExists(p)) === content;
+  // chmod before the compare: a mode drifted by an external touch self-heals
+  // even when the content is unchanged
+  if (mode !== undefined && same) await fs.chmod(p, mode).catch(() => { /* best effort */ });
+  if (same) return false;
   await fs.mkdir(path.dirname(p), { recursive: true });
   const tmp = `${p}.${process.pid}.tmp`;
   await fs.writeFile(tmp, content);
@@ -113,21 +126,25 @@ async function writeIfChanged(p: string, content: string, mode?: number): Promis
   return true;
 }
 
-/** The managed .gitignore block runs from the marker line to EOF (the same
- *  interval upsert replaces), so user content above it is always preserved.
- *  Entries are bare names: ktlsp turns each line into a glob matcher anchored
- *  at the root with a wildcard path prefix, so a gitignore-style "/out/" line
+/** The managed .gitignore block is the begin/end marker interval; the upsert
+ *  replaces exactly that interval, so user content around it is preserved. A
+ *  block left unterminated by a torn write (or the pre-dual-marker format
+ *  that ran to EOF) is replaced from the begin marker to EOF. Entries are
+ *  bare names: ktlsp turns each line into a glob matcher anchored at the
+ *  root with a wildcard path prefix, so a gitignore-style "/out/" line
  *  produces a doubled slash inside the pattern and matches nothing. */
 function upsertGitignoreBlock(cur: string | null, prunes: string[]): string | null {
-  const block = [GI_MARKER, ...prunes].join("\n") + "\n";
+  const block = [GI_BEGIN, ...prunes, GI_END].join("\n") + "\n";
   if (cur === null) return block;
-  const idx = cur.indexOf(GI_MARKER);
+  const idx = cur.indexOf(GI_BEGIN);
   if (idx < 0) {
     return cur.endsWith("\n") || cur === "" ? cur + block : cur + "\n" + block;
   }
+  const end = cur.indexOf(GI_END, idx + GI_BEGIN.length);
+  const stop = end < 0 ? cur.length : end + GI_END.length;
   let prefix = cur.slice(0, idx);
   if (prefix !== "" && !prefix.endsWith("\n")) prefix += "\n";
-  return prefix + block;
+  return prefix + block + (end < 0 ? "" : cur.slice(stop).replace(/^\n/, ""));
 }
 
 /** Top-level dirs/symlinks of the root; empty when it cannot be read, in
@@ -157,10 +174,16 @@ export async function ensureKlsSupport(
   try {
     const cfg = vscode.workspace.getConfiguration("aosp-nav");
     const extra = cfg.get<string[]>("kotlin.klsExcludes") ?? [];
+    // depth-agnostic segment match: a name that also occurs inside frameworks
+    // or packages would silently drop real Kotlin sources there
+    const risky = extra.filter((n) => ["packages", "tools", "test", "tests", "log", "system", "build", "src"].includes(n));
+    if (risky.length > 0) {
+      log(`[aosp-nav] kotlin: klsExcludes contain names that also occur inside frameworks/packages (${risky.join(", ")}); real sources under same-named dirs may be dropped from the Kotlin index`);
+    }
     // source walk: static safe set + user extras; .kls holds no Kotlin sources
     const src = [...new Set([...DEFAULT_KLS_EXCLUDES, ...extra, KLS_DIR])].sort();
     const lines = [EXCL_MARKER, ...src, ""];
-    await writeIfChanged(path.join(root, KLS_DIR, EXCL_NAME), lines.join("\n"));
+    let wrote = await writeIfChanged(path.join(root, KLS_DIR, EXCL_NAME), lines.join("\n"));
     // build-file walk: prune every top-level dir except .kls, so ktlsp finds
     // no gradle/maven resolver and uses the kls-classpath script below
     const gi = [...new Set([...AOSP_TOP_LEVEL, ...(await listTopLevelDirs(root, log))])]
@@ -168,14 +191,14 @@ export async function ensureKlsSupport(
       .sort();
     const giPath = path.join(root, ".gitignore");
     const next = upsertGitignoreBlock(await readIfExists(giPath), gi);
-    if (next !== null) await writeIfChanged(giPath, next);
+    if (next !== null) wrote = (await writeIfChanged(giPath, next)) || wrote;
     const manifest = djb2(jars.join("\n"));
     const cp =
       "#!/bin/sh\n" +
       `# aosp-nav managed -- ktlsp classpath (manifest ${manifest})\n` +
       `cat ${shQuote(jarListPathFor(root))}\n`;
-    await writeIfChanged(path.join(root, KLS_DIR, CP_NAME), cp, 0o755);
-    log("[aosp-nav] kotlin: ktlsp exclusions/pruning files ready");
+    wrote = (await writeIfChanged(path.join(root, KLS_DIR, CP_NAME), cp, 0o755)) || wrote;
+    if (wrote) log("[aosp-nav] kotlin: ktlsp exclusions/pruning files ready");
   } catch (e) {
     log(`[aosp-nav] kotlin: failed to write ktlsp support files: ${e}`);
   }
@@ -193,9 +216,14 @@ function serverBin(ctx: vscode.ExtensionContext): string {
  *  Anything already set by the user is never touched; only a detection hit is
  *  written, workspace-level. */
 async function findJava21Home(): Promise<string | null> {
-  const bases = ["/usr/lib/jvm", "/Library/Java/JavaVirtualMachines"];
-  if (process.env.JAVA_HOME) bases.push(process.env.JAVA_HOME);
-  for (const base of bases) {
+  const has21 = async (dir: string): Promise<string | null> => {
+    const rel = await readIfExists(path.join(dir, "release"));
+    return rel && /^JAVA_VERSION="?21/m.test(rel) ? dir : null;
+  };
+  // JAVA_HOME usually points at the JDK itself, not at the jvm parent dir
+  const jh = process.env.JAVA_HOME;
+  if (jh && (await has21(jh))) return jh;
+  for (const base of ["/usr/lib/jvm", "/Library/Java/JavaVirtualMachines", ...(jh ? [jh] : [])]) {
     let names: string[] = [];
     try {
       names = await fs.readdir(base);
@@ -203,8 +231,8 @@ async function findJava21Home(): Promise<string | null> {
       continue;
     }
     for (const n of names) {
-      const rel = await readIfExists(path.join(base, n, "release"));
-      if (rel && /^JAVA_VERSION="?21/m.test(rel)) return path.join(base, n);
+      const hit = await has21(path.join(base, n));
+      if (hit) return hit;
     }
   }
   return null;
@@ -259,11 +287,36 @@ export function ensureKtlspBootstrap(ctx: vscode.ExtensionContext, log: (msg: st
       return;
     }
     log(`[aosp-nav] kotlin: downloading ktlsp ${KTLSP_VERSION} ...`);
-    const res = await fetch(KTLSP_URL);
-    if (!res.ok) throw new Error(`HTTP ${res.status} from ${KTLSP_URL}`);
     const zip = path.join(ctx.globalStorageUri.fsPath, "ktlsp-server.zip");
     await fs.mkdir(ctx.globalStorageUri.fsPath, { recursive: true });
-    await fs.writeFile(zip, Buffer.from(await res.arrayBuffer()));
+    // bounded and cancellable, and the 87 MiB archive is piped to disk
+    // instead of being buffered as one ArrayBuffer in memory
+    const ac = new AbortController();
+    const timer = setTimeout(
+      () => ac.abort(new Error(`timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s`)),
+      DOWNLOAD_TIMEOUT_MS
+    );
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `[aosp-nav] Downloading ktlsp ${KTLSP_VERSION}`,
+          cancellable: true,
+        },
+        async (_progress, token) => {
+          token.onCancellationRequested(() => ac.abort(new Error("cancelled by user")));
+          const res = await fetch(KTLSP_URL, { signal: ac.signal });
+          if (!res.ok) throw new Error(`HTTP ${res.status} from ${KTLSP_URL}`);
+          if (!res.body) throw new Error(`empty response body from ${KTLSP_URL}`);
+          await pipeline(
+            Readable.fromWeb(res.body as import("stream/web").ReadableStream),
+            createWriteStream(zip)
+          );
+        }
+      );
+    } finally {
+      clearTimeout(timer);
+    }
     await fs.mkdir(installDir(ctx), { recursive: true });
     await extractZip(zip, installDir(ctx));
     await fs.rm(zip, { force: true });
@@ -275,6 +328,8 @@ export function ensureKtlspBootstrap(ctx: vscode.ExtensionContext, log: (msg: st
     const chain: string[] = [];
     for (let c: unknown = e; c; c = (c as Error).cause) chain.push(String(c));
     log(`[aosp-nav] kotlin: ktlsp bootstrap failed: ${chain.join(" <- ")}`);
+    // remove a truncated archive so the next attempt starts clean
+    void fs.rm(path.join(ctx.globalStorageUri.fsPath, "ktlsp-server.zip"), { force: true }).catch(() => {});
     bootstrapped = false; // transient fetch errors must not stick for the session
     void vscode.window.showWarningMessage(vscode.l10n.t(
       "[aosp-nav] The ktlsp download failed; install it manually per the ktlsp release page (codeberg.org/winlogon/ktlsp) and set kotlin.languageServer.path. Kotlin navigation stays on the frozen fwcd server until then."
@@ -305,7 +360,7 @@ export async function probeKlsSupport(root: string, ctx: vscode.ExtensionContext
   const version = lsPath && lsPath.startsWith(ours) ? (await readIfExists(path.join(ours, "VERSION")))?.trim() ?? null : null;
   return {
     exclusions,
-    gitignore: gi !== null && gi.includes(GI_MARKER),
+    gitignore: gi !== null && gi.includes(GI_BEGIN),
     klsClasspath: (await readIfExists(path.join(root, KLS_DIR, CP_NAME))) !== null,
     ls: !lsPath ? "fwcd default (deprecated)" : lsPath.startsWith(ours) ? "ktlsp (bundled)" : "custom",
     version,
@@ -325,9 +380,13 @@ export async function clearKlsSupport(ctx: vscode.ExtensionContext, roots: strin
     await fs.rmdir(path.join(root, KLS_DIR)).catch(() => { /* not empty or missing */ });
     const gi = path.join(root, ".gitignore");
     const cur = await readIfExists(gi);
-    const idx = cur !== null ? cur.indexOf(GI_MARKER) : -1;
-    if (idx >= 0 && (await writeIfChanged(gi, cur!.slice(0, idx)))) {
-      // the block was cut; nothing else to do
+    const idx = cur !== null ? cur.indexOf(GI_BEGIN) : -1;
+    if (idx >= 0) {
+      const end = cur!.indexOf(GI_END, idx + GI_BEGIN.length);
+      const stop = end < 0 ? cur!.length : end + GI_END.length;
+      let prefix = cur!.slice(0, idx);
+      if (prefix !== "" && !prefix.endsWith("\n")) prefix += "\n";
+      await writeIfChanged(gi, prefix + (end < 0 ? "" : cur!.slice(stop).replace(/^\n/, "")));
     }
   }
   const kc = vscode.workspace.getConfiguration("kotlin");
